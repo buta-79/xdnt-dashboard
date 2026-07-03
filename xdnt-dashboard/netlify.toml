@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Điều hướng mọi route về index.html — cần thiết khi sau này thêm client-side
+# routing (ví dụ /du-an/:id) để refresh trang không bị lỗi 404 trên Netlify.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
