@@ -375,6 +375,12 @@
 .attention-row-clickable { cursor: pointer; }
 .attention-row-clickable:hover { background: var(--bg); }
 
+/* ---- Nhân viên (Employees) tab ---- */
+.employee-row { margin-bottom: 12px; }
+.employee-row-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.employee-name-block { display: flex; align-items: center; gap: 8px; }
+.employee-name { font-size: 14.5px; font-weight: 700; }
+
 @media (max-width: 1000px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .grid-2 { grid-template-columns: 1fr; }
