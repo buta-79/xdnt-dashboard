@@ -283,10 +283,44 @@
 .forecast-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
 .cell-input { width: 110px; }
 
+/* ---- CRM CSKH tab ---- */
+.step-meta-handoff { color: var(--green); font-weight: 600; }
+.cskh-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.cskh-meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-soft); margin-bottom: 12px; }
+.cskh-meta span { display: flex; align-items: center; gap: 5px; }
+.cskh-notes { border-top: 1px solid var(--line); padding-top: 10px; }
+.cskh-note-item { font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.cskh-note-item:last-of-type { border-bottom: none; }
+.cskh-note-form { display: flex; gap: 8px; margin-top: 8px; }
+.cskh-note-form .input { flex: 1; }
+
+/* ---- Revenue timeline (Dự án + SOP) ---- */
+.revenue-event-item { display: flex; align-items: center; gap: 8px; font-size: 12px; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+.revenue-event-item strong { color: var(--green); }
+.revenue-event-form { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.revenue-event-form .input { flex: 1; min-width: 120px; }
+
+/* ---- SOP tab ---- */
+.sop-funnel { display: flex; flex-direction: column; gap: 8px; }
+.sop-funnel-row { display: grid; grid-template-columns: 170px 1fr 90px 60px; gap: 10px; align-items: center; padding: 4px 0; }
+.sop-funnel-row-bottleneck { background: var(--red-soft); border-radius: 6px; padding: 4px 6px; margin: 0 -6px; }
+.sop-funnel-label { font-size: 12.5px; font-weight: 600; }
+.sop-funnel-track { margin: 0; }
+.sop-funnel-count { text-align: right; }
+.sop-manual-input { width: 80px; text-align: right; }
+.sop-funnel-conv { text-align: right; font-size: 12px; font-weight: 600; }
+.sop-bottleneck-tag { color: var(--red); font-weight: 700; }
+.sop-bottleneck-summary { display: flex; align-items: center; gap: 8px; background: var(--red-soft); color: var(--red); border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 12.5px; }
+.sop-project-block { border-bottom: 1px solid var(--line); }
+.sop-project-block:last-child { border-bottom: none; }
+.sop-project-detail { padding: 4px 4px 12px 24px; }
+.sop-project-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+
 @media (max-width: 1000px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .grid-2 { grid-template-columns: 1fr; }
   .split { grid-template-columns: 1fr; }
   .kanban { grid-template-columns: repeat(2, 1fr); }
   .client-columns { grid-template-columns: 1fr; }
+  .sop-funnel-row { grid-template-columns: 120px 1fr 70px 50px; }
 }
