@@ -2,8 +2,8 @@
 // Data model + seed data cho XD · Nội Thất Dashboard.
 // Đây là "khuôn dữ liệu" dùng chung cho cả bản demo (localStorage) lẫn
 // bản có backend thật sau này — khi đổi sang web động, cấu trúc object ở
-// đây (Project/Round/Stage/Client/Pipeline/Forecast) nên khớp với schema
-// API/DB thật để không phải sửa lại các component trong src/App.jsx.
+// đây (Project/Round/Stage/Client/Pipeline/Forecast/CRM CSKH) nên khớp với
+// schema API/DB thật để không phải sửa lại các component trong src/App.jsx.
 // ------------------------------------------------------------------------
 
 /* ---------------------------------------------------------------------- */
@@ -12,16 +12,31 @@
 
 export const TODAY = "2026-07-01";
 
+// Quy trình triển khai 1 dự án — 7 bước, áp dụng cho mọi dự án ở trang "Dự án".
+// Bước 3 (Báo giá) là bước "chốt quyết định": KH đồng ý → sang bước 4 (Ký hợp
+// đồng); KH chưa đồng ý → mở một vòng điều chỉnh mới (quay lại bước 3, giữ
+// nguyên thông tin đã có ở bước 1-2). Bước 6 (Nghiệm thu) khi hoàn thành sẽ
+// tự động chuyển thông tin dự án sang CRM CSKH để theo dõi giai đoạn bảo hành
+// (bước 7).
 export const STAGES = [
-  { id: 1, label: "Thu thập thông tin KH", who: "KD", desc: "KD lấy thông tin khách hàng và upload lên hệ thống." },
-  { id: 2, label: "Báo giá & Dự toán", who: "BP", desc: "BP lập dự toán, upload file báo giá lên hệ thống." },
-  { id: 3, label: "Duyệt giá & BLN", who: "BOD", desc: "BOD (được phân quyền) duyệt giá và bảo lãnh ngân hàng." },
-  { id: 4, label: "Gửi khách hàng", who: "KD", desc: "KD xuất file PDF và gửi cho khách hàng." },
-  { id: 5, label: "Chốt & Kick-off", who: "KD", desc: "Nhắc lịch hỏi lại KH về dự toán. Đồng ý → lên lịch kick-off. Chưa đồng ý → mở tiến trình điều chỉnh mới." },
+  { id: 1, label: "Dự án/Khách hàng", who: "KD", desc: "KD tạo hồ sơ dự án, ghi nhận thông tin khách hàng ban đầu." },
+  { id: 2, label: "Khảo sát", who: "KD", desc: "KD/BP khảo sát mặt bằng, hiện trạng và nhu cầu thực tế của khách hàng." },
+  { id: 3, label: "Báo giá", who: "BP", desc: "BP lập báo giá/dự toán và gửi khách hàng. KH phản hồi đồng ý hoặc yêu cầu điều chỉnh." },
+  { id: 4, label: "Ký hợp đồng", who: "KD", desc: "KD hoàn tất thủ tục, ký hợp đồng chính thức với khách hàng." },
+  { id: 5, label: "Thi công", who: "BP", desc: "Bộ phận triển khai thi công theo hợp đồng và hồ sơ thiết kế đã duyệt." },
+  { id: 6, label: "Nghiệm thu", who: "KD", desc: "Nghiệm thu công trình cùng khách hàng. Chốt nghiệm thu sẽ chuyển hồ sơ sang CRM CSKH." },
+  { id: 7, label: "Bảo hành", who: "KD", desc: "Theo dõi bảo hành sau nghiệm thu (quản lý chi tiết ở mục CRM CSKH)." },
 ];
 
+// Bước "chốt quyết định" của khách hàng (đồng ý báo giá / yêu cầu điều chỉnh).
+export const DECISION_STAGE_ID = 3;
+// Bước mà khi hoàn thành sẽ tự động tạo hồ sơ CRM CSKH (chốt nghiệm thu).
+export const HANDOFF_STAGE_ID = 6;
+// Bước cuối cùng của quy trình (Bảo hành).
+export const FINAL_STAGE_ID = STAGES[STAGES.length - 1].id;
+
 export const ROLES = ["KD", "BP", "BOD"];
-export const ROLE_LABELS = { KD: "Kinh doanh (KD)", BP: "Báo giá (BP)", BOD: "Ban điều hành (BOD)" };
+export const ROLE_LABELS = { KD: "Kinh doanh (KD)", BP: "Bộ phận triển khai (BP)", BOD: "Ban điều hành (BOD)" };
 
 export const PIPELINE_STAGES = [
   { key: "leads", label: "Công trình tiềm năng", color: "var(--blue)" },
@@ -30,6 +45,26 @@ export const PIPELINE_STAGES = [
   { key: "quote", label: "Báo giá", color: "var(--amber)" },
   { key: "contract", label: "Hợp đồng", color: "var(--green)" },
 ];
+
+// Sơ đồ quy trình SOP tổng (Marketing → ... → KH quay lại) dùng cho trang
+// "Quy trình SOP" — đánh giá tiềm năng và điểm nghẽn theo từng chặng.
+// source: "auto"  → số liệu tính tự động từ dữ liệu Dự án/Khách hàng/Pipeline.
+// source: "manual" → chưa có nguồn dữ liệu kết nối, nhập tay ở trang SOP.
+export const SOP_FUNNEL_STEPS = [
+  { key: "marketing", label: "Marketing", source: "manual" },
+  { key: "leads", label: "Khách hàng tiềm năng", source: "auto" },
+  { key: "crm", label: "CRM", source: "auto" },
+  { key: "sales_process", label: "Quy trình bán hàng", source: "auto" },
+  { key: "quote", label: "Báo giá", source: "auto" },
+  { key: "contract", label: "Hợp đồng", source: "auto" },
+  { key: "design", label: "Thiết kế", source: "manual" },
+  { key: "construction", label: "Thi công", source: "auto" },
+  { key: "acceptance", label: "Nghiệm thu", source: "auto" },
+  { key: "warranty", label: "Bảo hành", source: "auto" },
+  { key: "repeat", label: "KH quay lại", source: "manual" },
+];
+// Ngưỡng % chuyển đổi giữa 2 chặng liên tiếp — dưới ngưỡng này bị đánh dấu là điểm nghẽn.
+export const SOP_BOTTLENECK_CONVERSION = 50;
 
 export const MONTHS = ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11","T12"];
 export const BOTTLENECK_THRESHOLD = 3;
@@ -66,25 +101,34 @@ export function rejectedStage(completedBy, completedAt) {
   return { state: "rejected", completedAt, completedBy, unlockedForEdit: false, attachments: [] };
 }
 export function makeRound(number, reason = null, carriedFrom = null) {
+  const carried = number !== 1;
   return {
     id: uid("r"), number, reason, createdAt: TODAY,
     outcome: null,
     stageStatus: "in_progress",
-    currentStage: number === 1 ? 1 : 2,
+    currentStage: carried ? DECISION_STAGE_ID : 1,
     daysInStage: 0,
-    kickoffDate: null,
     stages: {
-      1: number === 1 ? pendingStage() : doneStage("Kế thừa từ vòng trước", carriedFrom || TODAY),
-      2: pendingStage(), 3: pendingStage(), 4: pendingStage(), 5: pendingStage(),
+      1: carried ? doneStage("Kế thừa từ vòng trước", carriedFrom || TODAY) : pendingStage(),
+      2: carried ? doneStage("Kế thừa từ vòng trước", carriedFrom || TODAY) : pendingStage(),
+      3: pendingStage(), 4: pendingStage(), 5: pendingStage(), 6: pendingStage(), 7: pendingStage(),
     },
   };
 }
 export function getCurrentRound(project) { return project.rounds[project.rounds.length - 1]; }
 export function getRevisionCount(project) { return project.rounds.length - 1; }
 export function stageRevisionNote(project, stageId) {
-  if (stageId === 1) return null;
+  if (stageId <= 2) return null;
   const n = getRevisionCount(project);
   return n > 0 ? `Đã điều chỉnh lại ${n} lần` : null;
+}
+export function makeRevenueEvent(date, amount, note) {
+  return { id: uid("rev"), date, amount, note };
+}
+export function addMonths(dateStr, months) {
+  const d = new Date(dateStr);
+  d.setMonth(d.getMonth() + months);
+  return d.toISOString().slice(0, 10);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -92,67 +136,109 @@ export function stageRevisionNote(project, stageId) {
 /* ---------------------------------------------------------------------- */
 
 export function seedProjects() {
+  // p1 — Showroom ABC: đã khảo sát + báo giá xong, đang ở bước Ký hợp đồng.
   const p1r1 = makeRound(1);
   p1r1.stages[1] = doneStage("KD - Mai", "2026-06-02", [{ name: "Thong-tin-KH-ABC.pdf", size: 245000 }]);
-  p1r1.stages[2] = doneStage("BP - Hùng", "2026-06-09", [{ name: "Du-toan-ABC-v1.xlsx", size: 98000 }]);
-  p1r1.currentStage = 3; p1r1.daysInStage = 5;
+  p1r1.stages[2] = doneStage("KD - Mai", "2026-06-06", [{ name: "Khao-sat-ABC.pdf", size: 210000 }]);
+  p1r1.stages[3] = doneStage("BP - Hùng", "2026-06-09", [{ name: "Bao-gia-ABC-v1.xlsx", size: 98000 }]);
+  p1r1.outcome = "approved";
+  p1r1.currentStage = 4; p1r1.daysInStage = 5;
 
+  // p2 — Fintech XYZ: vòng 1 báo giá bị KH yêu cầu điều chỉnh, vòng 2 đã được duyệt, đang ký hợp đồng.
   const p2r1 = makeRound(1);
   p2r1.stages[1] = doneStage("KD - Thảo", "2026-06-01", [{ name: "Thong-tin-KH-Fintech.pdf", size: 180000 }]);
-  p2r1.stages[2] = doneStage("BP - Hùng", "2026-06-06", [{ name: "Du-toan-Fintech-v1.xlsx", size: 112000 }]);
-  p2r1.stages[3] = doneStage("BOD - Anh Khải", "2026-06-10", [{ name: "Duyet-gia-BLN-v1.pdf", size: 76000 }]);
-  p2r1.stages[4] = doneStage("KD - Thảo", "2026-06-11", [{ name: "Bao-gia-gui-KH-v1.pdf", size: 76000 }]);
-  p2r1.stages[5] = rejectedStage("KD - Thảo", "2026-06-16");
-  p2r1.currentStage = 5; p2r1.outcome = "rejected"; p2r1.stageStatus = "rejected";
-  const p2r2 = makeRound(2, "KH yêu cầu giảm giá 5% và bổ sung hạng mục điện nhẹ.", "2026-06-16");
-  p2r2.stages[2] = doneStage("BP - Hùng", "2026-06-19", [{ name: "Du-toan-Fintech-v2.xlsx", size: 118000 }]);
-  p2r2.stages[3] = doneStage("BOD - Anh Khải", "2026-06-22", [{ name: "Duyet-gia-BLN-v2.pdf", size: 80000 }]);
-  p2r2.stages[4] = doneStage("KD - Thảo", "2026-06-23", [{ name: "Bao-gia-gui-KH-v2.pdf", size: 80000 }]);
-  p2r2.currentStage = 5; p2r2.stageStatus = "waiting_decision"; p2r2.daysInStage = 4;
+  p2r1.stages[2] = doneStage("KD - Thảo", "2026-06-04", [{ name: "Khao-sat-Fintech.pdf", size: 150000 }]);
+  p2r1.stages[3] = rejectedStage("BP - Hùng", "2026-06-10");
+  p2r1.currentStage = 3; p2r1.outcome = "rejected"; p2r1.stageStatus = "rejected";
+  const p2r2 = makeRound(2, "KH yêu cầu giảm giá 5% và bổ sung hạng mục điện nhẹ.", "2026-06-10");
+  p2r2.stages[3] = doneStage("BP - Hùng", "2026-06-19", [{ name: "Bao-gia-Fintech-v2.xlsx", size: 118000 }]);
+  p2r2.outcome = "approved";
+  p2r2.currentStage = 4; p2r2.daysInStage = 4;
 
+  // p3 — Sóng Coffee: mới xong thu thập thông tin, đang khảo sát.
   const p3r1 = makeRound(1);
   p3r1.stages[1] = doneStage("KD - Mai", "2026-06-27", [{ name: "Thong-tin-Song-Coffee.pdf", size: 90000 }]);
   p3r1.currentStage = 2; p3r1.daysInStage = 1;
 
+  // p4 — Sunview: đã nghiệm thu, đang trong giai đoạn Bảo hành (đã chuyển sang CRM CSKH).
   const p4r1 = makeRound(1);
   p4r1.stages[1] = doneStage("KD - Long", "2026-05-05", [{ name: "Thong-tin-Sunview.pdf", size: 120000 }]);
-  p4r1.stages[2] = doneStage("BP - Hùng", "2026-05-10", [{ name: "Du-toan-Sunview-v1.xlsx", size: 100000 }]);
-  p4r1.stages[3] = doneStage("BOD - Anh Khải", "2026-05-14", [{ name: "Duyet-gia-BLN-Sunview.pdf", size: 70000 }]);
-  p4r1.stages[4] = doneStage("KD - Long", "2026-05-15", [{ name: "Bao-gia-gui-KH-Sunview.pdf", size: 70000 }]);
-  p4r1.stages[5] = doneStage("KD - Long", "2026-05-20");
-  p4r1.currentStage = 5; p4r1.stageStatus = "kickoff_scheduled"; p4r1.outcome = "approved"; p4r1.kickoffDate = "2026-07-10";
+  p4r1.stages[2] = doneStage("KD - Long", "2026-05-08", [{ name: "Khao-sat-Sunview.pdf", size: 100000 }]);
+  p4r1.stages[3] = doneStage("BP - Hùng", "2026-05-12", [{ name: "Bao-gia-Sunview.xlsx", size: 100000 }]);
+  p4r1.stages[4] = doneStage("KD - Long", "2026-05-15", [{ name: "Hop-dong-Sunview.pdf", size: 70000 }]);
+  p4r1.stages[5] = doneStage("BP - Hùng", "2026-06-20", [{ name: "Ban-giao-thi-cong-Sunview.pdf", size: 60000 }]);
+  p4r1.stages[6] = doneStage("KD - Long", "2026-06-25", [{ name: "Bien-ban-nghiem-thu-Sunview.pdf", size: 55000 }]);
+  p4r1.outcome = "approved";
+  p4r1.currentStage = 7; p4r1.daysInStage = 6;
 
+  // p5 — Biển Đông F&B: vừa mở hồ sơ dự án, đang đứng lâu ở bước 1 (điểm nghẽn).
   const p5r1 = makeRound(1);
   p5r1.currentStage = 1; p5r1.daysInStage = 6;
 
+  // p6 — Phương Nam Logistics: đã hoàn tất toàn bộ 7 bước, dự án đóng hồ sơ.
   const p6r1 = makeRound(1);
   p6r1.stages[1] = doneStage("KD - Thảo", "2026-04-02");
-  p6r1.stages[2] = doneStage("BP - Hùng", "2026-04-08");
-  p6r1.stages[3] = doneStage("BOD - Anh Khải", "2026-04-12");
-  p6r1.stages[4] = doneStage("KD - Thảo", "2026-04-13");
-  p6r1.stages[5] = doneStage("KD - Thảo", "2026-04-18");
-  p6r1.currentStage = 5; p6r1.stageStatus = "kickoff_scheduled"; p6r1.outcome = "approved"; p6r1.kickoffDate = "2026-05-02";
+  p6r1.stages[2] = doneStage("KD - Thảo", "2026-04-05");
+  p6r1.stages[3] = doneStage("BP - Hùng", "2026-04-08");
+  p6r1.stages[4] = doneStage("KD - Thảo", "2026-04-12");
+  p6r1.stages[5] = doneStage("BP - Hùng", "2026-04-25");
+  p6r1.stages[6] = doneStage("KD - Thảo", "2026-04-28");
+  p6r1.stages[7] = doneStage("KD - Thảo", "2026-06-15");
+  p6r1.outcome = "approved";
+  p6r1.currentStage = 7;
 
   return [
     { id: "p1", name: "Showroom Nội thất ABC – Q7", client: "Công ty CP Nội Thất ABC",
       scope: "Thi công trọn gói nội thất showroom 450m²: hệ tủ trưng bày, quầy lễ tân, hệ thống chiếu sáng.",
-      status: "active", paymentTotal: 850000000, paymentCollected: 300000000, rounds: [p1r1] },
+      status: "active", paymentTotal: 850000000, paymentCollected: 300000000, rounds: [p1r1],
+      revenueEvents: [makeRevenueEvent("2026-06-10", 300000000, "Đặt cọc 35% theo báo giá đã duyệt")] },
     { id: "p2", name: "Văn phòng Fintech XYZ – Q1", client: "Công ty TNHH Fintech XYZ",
       scope: "Thiết kế & thi công nội thất văn phòng 800m², khu làm việc mở, phòng họp kính.",
-      status: "active", paymentTotal: 1650000000, paymentCollected: 500000000, rounds: [p2r1, p2r2] },
+      status: "active", paymentTotal: 1650000000, paymentCollected: 500000000, rounds: [p2r1, p2r2],
+      revenueEvents: [
+        makeRevenueEvent("2026-06-20", 300000000, "Tạm ứng ký hợp đồng"),
+        makeRevenueEvent("2026-06-28", 200000000, "Thanh toán bổ sung hạng mục điện nhẹ"),
+      ] },
     { id: "p3", name: "Chuỗi cafe Sóng – 3 chi nhánh", client: "Sóng Coffee Group",
       scope: "Thi công nội thất 3 chi nhánh cafe theo mẫu thiết kế chuẩn thương hiệu.",
-      status: "active", paymentTotal: 420000000, paymentCollected: 0, rounds: [p3r1] },
+      status: "active", paymentTotal: 420000000, paymentCollected: 0, rounds: [p3r1], revenueEvents: [] },
     { id: "p4", name: "Căn hộ mẫu Sunview – Block A", client: "Sunview Realty",
       scope: "Nội thất căn hộ mẫu 2PN + trang trí showroom bán hàng.",
-      status: "active", paymentTotal: 620000000, paymentCollected: 620000000, rounds: [p4r1] },
+      status: "active", paymentTotal: 620000000, paymentCollected: 620000000, rounds: [p4r1],
+      revenueEvents: [
+        makeRevenueEvent("2026-05-16", 300000000, "Tạm ứng ký hợp đồng 50%"),
+        makeRevenueEvent("2026-06-26", 320000000, "Thanh toán sau nghiệm thu"),
+      ] },
     { id: "p5", name: "Nhà hàng Hải Sản Biển Đông", client: "Biển Đông F&B",
       scope: "Thi công nội thất nhà hàng 600m², khu bếp, khu sảnh, phòng VIP.",
-      status: "active", paymentTotal: 980000000, paymentCollected: 100000000, rounds: [p5r1] },
+      status: "active", paymentTotal: 980000000, paymentCollected: 100000000, rounds: [p5r1],
+      revenueEvents: [makeRevenueEvent("2026-06-26", 100000000, "Tạm ứng thiện chí trước khảo sát")] },
     { id: "p6", name: "Trụ sở Logistics Phương Nam", client: "Phương Nam Logistics",
       scope: "Nội thất khối văn phòng điều hành 3 tầng.",
-      status: "completed", paymentTotal: 1100000000, paymentCollected: 1100000000, rounds: [p6r1] },
+      status: "completed", paymentTotal: 1100000000, paymentCollected: 1100000000, rounds: [p6r1],
+      revenueEvents: [
+        makeRevenueEvent("2026-04-13", 550000000, "Tạm ứng ký hợp đồng 50%"),
+        makeRevenueEvent("2026-06-16", 550000000, "Thanh toán sau nghiệm thu"),
+      ] },
   ];
+}
+
+// Hồ sơ CRM CSKH — được tạo tự động khi 1 dự án chốt Nghiệm thu (bước 6),
+// dùng để theo dõi giai đoạn Bảo hành (bước 7) độc lập với trang Dự án.
+export function seedCrmCskh() {
+  return [
+    { id: "crm1", projectId: "p4", projectName: "Căn hộ mẫu Sunview – Block A", client: "Sunview Realty",
+      transferredAt: "2026-06-25", warrantyMonths: 12, status: "active",
+      notes: [{ id: uid("nt"), date: "2026-06-28", text: "Đã gọi hỏi thăm khách hàng sau bàn giao, chưa phát sinh sự cố." }] },
+    { id: "crm2", projectId: "p6", projectName: "Trụ sở Logistics Phương Nam", client: "Phương Nam Logistics",
+      transferredAt: "2026-04-28", warrantyMonths: 12, status: "active", notes: [] },
+  ];
+}
+
+// Số liệu chưa có nguồn dữ liệu kết nối trong app (Marketing/Thiết kế/KH quay
+// lại) — nhập tay ở trang Quy trình SOP, lưu lại như phần còn lại của dữ liệu.
+export function seedSopManual() {
+  return { marketing: 42, design: 5, repeat: 2 };
 }
 
 export function seedClients() {
