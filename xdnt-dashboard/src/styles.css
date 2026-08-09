@@ -316,6 +316,65 @@
 .sop-project-detail { padding: 4px 4px 12px 24px; }
 .sop-project-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 
+/* ---- Stage-Gate checklist (Opportunity + Project) ---- */
+.gate-checklist { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.gate-check-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--ink-soft); cursor: pointer; line-height: 1.4; }
+.gate-check-item input { margin-top: 2px; accent-color: var(--copper); flex-shrink: 0; }
+.gate-check-done { color: var(--ink); text-decoration: line-through; text-decoration-color: var(--line-dark); }
+
+/* ---- Bottleneck log ---- */
+.bn-log { margin-bottom: 16px; }
+.bn-log-item { border-bottom: 1px solid var(--line); padding: 8px 0; font-size: 12px; }
+.bn-log-item:last-child { border-bottom: none; }
+.bn-log-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 3px; }
+.bn-log-stage { font-weight: 600; }
+.bn-log-resolved { font-size: 10.5px; font-weight: 700; color: var(--green); background: var(--green-soft); padding: 1px 7px; border-radius: 999px; }
+.bn-log-open-tag { font-size: 10.5px; font-weight: 700; color: var(--red); background: var(--red-soft); padding: 1px 7px; border-radius: 999px; }
+.bn-log-reason { color: var(--ink-soft); }
+.bn-log-meta { margin-top: 2px; font-size: 11px; }
+
+/* ---- Risk badge ---- */
+.risk-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.risk-red { background: var(--red-soft); color: var(--red); }
+.risk-green { background: var(--green-soft); color: var(--green); }
+
+/* ---- Extra status pills (Opportunity / Project) ---- */
+.status-won { background: var(--green-soft); color: var(--green); }
+.status-lost { background: var(--red-soft); color: var(--red); }
+.status-closed { background: var(--bg); color: var(--ink-soft); }
+
+/* ---- Project code tag ---- */
+.project-code-tag { font-weight: 700; color: var(--copper); }
+
+/* ---- Revenue event type tag ---- */
+.event-type-tag { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.2px; }
+.event-type-payment { background: var(--green-soft); color: var(--green); }
+.event-type-invoice { background: var(--blue-soft); color: var(--blue); }
+
+/* ---- Tasks tab ---- */
+.task-row-overdue { background: var(--red-soft); }
+
+/* ---- Master Dashboard zones ---- */
+.zone-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.zone-panel { display: flex; flex-direction: column; }
+.zone-line { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.zone-line:last-of-type { border-bottom: none; }
+.zone-sub { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: var(--ink-soft); margin: 10px 0 6px; }
+.zone-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.zone-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+.zone-list li:hover { background: var(--bg); }
+.zone-list-alert li { justify-content: flex-start; cursor: default; color: var(--ink-soft); }
+.zone-list-alert li:hover { background: transparent; }
+.zone-project-row { padding: 8px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.zone-project-row:last-child { border-bottom: none; }
+.zone-project-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; margin-bottom: 5px; }
+.zone-project-sub { margin-top: 4px; font-size: 11px; }
+
+/* ---- Today Need Attention / generic table clickable row ---- */
+.attention-table td { vertical-align: top; }
+.attention-row-clickable { cursor: pointer; }
+.attention-row-clickable:hover { background: var(--bg); }
+
 @media (max-width: 1000px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .grid-2 { grid-template-columns: 1fr; }
@@ -323,4 +382,5 @@
   .kanban { grid-template-columns: repeat(2, 1fr); }
   .client-columns { grid-template-columns: 1fr; }
   .sop-funnel-row { grid-template-columns: 120px 1fr 70px 50px; }
+  .zone-grid { grid-template-columns: 1fr; }
 }
