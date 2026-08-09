@@ -381,6 +381,27 @@
 .employee-name-block { display: flex; align-items: center; gap: 8px; }
 .employee-name { font-size: 14.5px; font-weight: 700; }
 
+/* ---- Đăng nhập / phân quyền (Firebase Auth) ---- */
+.login-screen {
+  width: 100vw; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 28px 28px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  color: var(--ink);
+}
+.login-box {
+  width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 30px 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.06); text-align: left;
+}
+.login-box h2 { font-family: 'Space Grotesk', 'Inter', sans-serif; }
+.login-box .brand-title { color: var(--ink); }
+.login-box .brand-sub { color: var(--ink-soft); }
+
+/* ---- Danh tính đăng nhập ở sidebar (thay cho role-switch cũ) ---- */
+.sidebar .btn-ghost { color: var(--sidebar-text); }
+.sidebar .btn-ghost:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
 @media (max-width: 1000px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .grid-2 { grid-template-columns: 1fr; }

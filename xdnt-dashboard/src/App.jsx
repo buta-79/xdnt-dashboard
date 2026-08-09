@@ -4,8 +4,12 @@ import {
   GitBranch, Plus, X, Check, ChevronRight, ChevronDown, ChevronLeft, AlertTriangle,
   Trash2, Building2, User, Calendar, RotateCcw, PhoneCall, Award, Search, CircleCheck,
   Circle, Clock, DollarSign, Save, PenLine, UserPlus, Link2, Flag, Wallet, Download,
+  LogOut, LogIn, Database, Lock,
 } from "lucide-react";
-import { storage } from "./lib/storage";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut } from "firebase/auth";
+import { doc, onSnapshot as onDocSnapshot } from "firebase/firestore";
+import { auth, db, createStaffAuthAccount } from "./lib/firebase";
+import { subscribeCollection, saveDoc, removeDoc, explainWriteError } from "./lib/db";
 import { exportMonthlyReport } from "./lib/report";
 import {
   todayISO, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths,
@@ -155,6 +159,9 @@ function StageGateStepper({ stageDefs, flow, currentRole, onToggleGate, onAdvanc
         const isDone = stage.state === "done";
         const isCurrent = flow.currentStage === s.id && !isDone;
         const canAct = currentRole === s.who || currentRole === "BOD";
+        // Bước đã "Hoàn thành" tự khoá — chỉ BOD được "mở lại" (báo điểm nghẽn/trả về bước trước).
+        // Người phụ trách bước hiện tại (KD/BP) chỉ được đi TỚI (qua bước tiếp theo), không được lùi.
+        const canSendBack = currentRole === "BOD";
         const canAdvanceNow = isCurrent && canAdvanceGate(s, stage);
         const isFinal = s.id === finalId;
 
@@ -183,7 +190,7 @@ function StageGateStepper({ stageDefs, flow, currentRole, onToggleGate, onAdvanc
                       <button className="btn btn-primary btn-sm" disabled={!canAdvanceNow} onClick={onAdvance}>
                         <Check size={14} /> Qua bước tiếp theo
                       </button>
-                      {s.id > 1 && !showSendBack && (
+                      {s.id > 1 && canSendBack && !showSendBack && (
                         <button className="btn btn-ghost btn-sm" onClick={() => setShowSendBack(true)}>
                           <AlertTriangle size={13} /> Báo điểm nghẽn — trả về bước trước
                         </button>
@@ -192,7 +199,10 @@ function StageGateStepper({ stageDefs, flow, currentRole, onToggleGate, onAdvanc
                   ) : (
                     <div className="perm-note">Chỉ {ROLE_LABELS[s.who]} hoặc BOD được thực hiện bước này. (Vai trò hiện tại: {ROLE_LABELS[currentRole]})</div>
                   )}
-                  {showSendBack && (
+                  {canAct && s.id > 1 && !canSendBack && (
+                    <div className="perm-note">Bước trước đã hoàn thành và tự khoá — chỉ BOD được báo điểm nghẽn/mở lại.</div>
+                  )}
+                  {showSendBack && canSendBack && (
                     <SendBackForm onCancel={() => setShowSendBack(false)} onSubmit={(reason) => { onSendBack(reason); setShowSendBack(false); }} />
                   )}
                 </>
@@ -788,11 +798,12 @@ function NewProjectForm({ onCancel, onCreate, customers }) {
 
 function ProjectDetail({ project, customers, currentRole, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost }) {
   const [editingInfo, setEditingInfo] = useState(false);
+  const isBOD = currentRole === "BOD";
   useEffect(() => setEditingInfo(false), [project.id]);
 
   const pct = projectStagePct(project);
 
-  if (editingInfo) {
+  if (editingInfo && isBOD) {
     return (
       <div className="project-detail">
         <div className="pd-header"><h2>Sửa thông tin dự án</h2></div>
@@ -810,7 +821,7 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
           <h2>{project.name}</h2>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => setEditingInfo(true)}><PenLine size={13} /> Sửa thông tin</button>
+          {isBOD && <button className="btn btn-ghost btn-sm" onClick={() => setEditingInfo(true)}><PenLine size={13} /> Sửa thông tin</button>}
           <RiskBadge level={projectRiskLevel(project)} />
           <StatusPill status={project.status} map={{ active: "Đang triển khai", closed: "Đã đóng (CLOSED)", on_hold: "Tạm dừng" }} />
         </div>
@@ -932,7 +943,7 @@ function NewTaskForm({ projects, onCancel, onCreate }) {
   );
 }
 
-function TasksTab({ tasks, projects, addTask, toggleTaskDone, removeTask, goToProject }) {
+function TasksTab({ tasks, projects, addTask, toggleTaskDone, removeTask, goToProject, isBOD }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("open");
   const overdue = tasks.filter(isTaskOverdue);
@@ -973,7 +984,7 @@ function TasksTab({ tasks, projects, addTask, toggleTaskDone, removeTask, goToPr
                     <td>{t.projectCode ? <button className="btn btn-ghost btn-sm" onClick={() => goToProject(t.projectCode)}>{t.projectCode}</button> : "—"}</td>
                     <td>{t.assignee || "—"}</td>
                     <td className={isTaskOverdue(t) ? "figure-debt" : ""}>{t.dueDate}</td>
-                    <td><button className="icon-btn" onClick={() => removeTask(t.id)}><Trash2 size={13} /></button></td>
+                    <td>{isBOD && <button className="icon-btn" onClick={() => removeTask(t.id)}><Trash2 size={13} /></button>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1000,7 +1011,7 @@ function WarrantyNoteForm({ onAdd }) {
   );
 }
 
-function WarrantyTab({ warrantyRecords, addWarrantyNote, closeWarrantyRecord, goToProject }) {
+function WarrantyTab({ warrantyRecords, addWarrantyNote, closeWarrantyRecord, goToProject, isBOD }) {
   const [filter, setFilter] = useState("all");
   const filtered = warrantyRecords.filter((r) => (filter === "all" ? true : r.status === filter));
   const activeCount = warrantyRecords.filter((r) => r.status === "active").length;
@@ -1044,7 +1055,7 @@ function WarrantyTab({ warrantyRecords, addWarrantyNote, closeWarrantyRecord, go
               <span><Calendar size={13} /> Chuyển giao: {r.transferredAt}</span>
               <span><ShieldCheck size={13} /> Hạn bảo hành: {r.warrantyMonths} tháng (đến {warrantyEnd})</span>
               <button className="btn btn-ghost btn-sm" onClick={() => goToProject(r.projectCode)}>Xem dự án <ChevronRight size={13} /></button>
-              {r.status === "active" && <button className="btn btn-outline btn-sm" onClick={() => closeWarrantyRecord(r.id)}>Đóng hồ sơ bảo hành</button>}
+              {r.status === "active" && isBOD && <button className="btn btn-outline btn-sm" onClick={() => closeWarrantyRecord(r.id)}>Đóng hồ sơ bảo hành</button>}
             </div>
             <div className="cskh-notes">
               <div className="attach-head-label" style={{ marginBottom: 6 }}><PhoneCall size={12} /> Ghi chú chăm sóc</div>
@@ -1063,42 +1074,23 @@ function WarrantyTab({ warrantyRecords, addWarrantyNote, closeWarrantyRecord, go
 /*  CUSTOMERS TAB                                                           */
 /* ---------------------------------------------------------------------- */
 
-function OwnerPicker({ employees, value, onChange, onCreateEmployee }) {
-  const [showNew, setShowNew] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newRole, setNewRole] = useState("KD");
+function OwnerPicker({ employees, value, onChange }) {
   const activeEmployees = employees.filter((e) => e.active);
 
   return (
     <div>
-      <select className="input" value={value} onChange={(e) => {
-        if (e.target.value === "__new__") { setShowNew(true); return; }
-        onChange(e.target.value);
-      }}>
+      <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">-- Chưa gán nhân viên phụ trách --</option>
         {activeEmployees.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.role})</option>)}
-        <option value="__new__">-- Thêm nhân viên mới --</option>
       </select>
-      {showNew && (
-        <div className="revenue-event-form" style={{ marginTop: 6 }}>
-          <input className="input input-sm" placeholder="Tên nhân viên" value={newName} onChange={(e) => setNewName(e.target.value)} />
-          <select className="input input-sm" style={{ maxWidth: 110 }} value={newRole} onChange={(e) => setNewRole(e.target.value)}>
-            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <button className="btn btn-outline btn-sm" onClick={() => {
-            if (!newName.trim()) return;
-            const emp = onCreateEmployee({ name: newName.trim(), role: newRole });
-            onChange(emp.id);
-            setShowNew(false); setNewName("");
-          }}><Plus size={13} /> Tạo &amp; gán</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowNew(false)}>Hủy</button>
-        </div>
+      {activeEmployees.length === 0 && (
+        <div className="dim" style={{ fontSize: 12, marginTop: 4 }}>Chưa có nhân viên nào — vào tab "Nhân viên" để thêm (chỉ BOD được thêm).</div>
       )}
     </div>
   );
 }
 
-function NewCustomerForm({ employees, onCancel, onCreate, onCreateEmployee }) {
+function NewCustomerForm({ employees, onCancel, onCreate }) {
   const [f, setF] = useState({ company: "", industry: "", accountOwnerId: "", tier: "normal", overview: "", advantage: "" });
   const [contacts, setContacts] = useState([{ id: uid("ct"), name: "", position: "", phone: "", isPrimary: true }]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -1123,7 +1115,7 @@ function NewCustomerForm({ employees, onCancel, onCreate, onCreateEmployee }) {
         <div className="form-row"><label>Doanh nghiệp</label><input className="input" value={f.company} onChange={set("company")} /></div>
         <div className="form-row"><label>Ngành hàng</label><input className="input" value={f.industry} onChange={set("industry")} /></div>
         <div className="form-row"><label>Nhân viên phụ trách</label>
-          <OwnerPicker employees={employees} value={f.accountOwnerId} onChange={(id) => setF({ ...f, accountOwnerId: id })} onCreateEmployee={onCreateEmployee} />
+          <OwnerPicker employees={employees} value={f.accountOwnerId} onChange={(id) => setF({ ...f, accountOwnerId: id })} />
         </div>
         <div className="form-row"><label>Nhóm tiềm năng</label>
           <select className="input" value={f.tier} onChange={set("tier")}><option value="high">Cao</option><option value="normal">Bình thường</option></select>
@@ -1154,7 +1146,7 @@ function NewCustomerForm({ employees, onCancel, onCreate, onCreateEmployee }) {
   );
 }
 
-function CustomerCard({ c, onOpen, onToggleTier }) {
+function CustomerCard({ c, onOpen, onToggleTier, isBOD }) {
   const primary = c.contacts.find((x) => x.isPrimary) || c.contacts[0];
   return (
     <div className="client-card" onClick={() => onOpen(c.id)}>
@@ -1169,13 +1161,13 @@ function CustomerCard({ c, onOpen, onToggleTier }) {
       <div className="client-block"><div className="client-block-label">Lợi thế hợp tác</div><p>{c.advantage}</p></div>
       <div className="client-card-foot">
         <TierBadge tier={c.tier} />
-        <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onToggleTier(c.id); }}>Chuyển sang {c.tier === "high" ? "Bình thường" : "Cao"}</button>
+        {isBOD && <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onToggleTier(c.id); }}>Chuyển sang {c.tier === "high" ? "Bình thường" : "Cao"}</button>}
       </div>
     </div>
   );
 }
 
-function OwnerReassignBox({ customer, employees, onReassign }) {
+function OwnerReassignBox({ customer, employees, onReassign, isBOD }) {
   const [editing, setEditing] = useState(false);
   const [choice, setChoice] = useState(customer.accountOwnerId || "");
   const currentOwner = employees.find((e) => e.id === customer.accountOwnerId);
@@ -1184,7 +1176,7 @@ function OwnerReassignBox({ customer, employees, onReassign }) {
     return (
       <div className="pane-sub" style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span>Phụ trách: {customer.accountOwnerName ? `${customer.accountOwnerName}${currentOwner ? ` (${currentOwner.role})` : ""}` : "Chưa gán"}</span>
-        <button className="btn btn-ghost btn-sm" onClick={() => { setChoice(customer.accountOwnerId || ""); setEditing(true); }}><PenLine size={12} /> Đổi nhân viên</button>
+        {isBOD && <button className="btn btn-ghost btn-sm" onClick={() => { setChoice(customer.accountOwnerId || ""); setEditing(true); }}><PenLine size={12} /> Đổi nhân viên</button>}
       </div>
     );
   }
@@ -1200,7 +1192,7 @@ function OwnerReassignBox({ customer, employees, onReassign }) {
   );
 }
 
-function CustomerDetail({ customer, employees, opportunities, projects, onBack, goToProject, goToOpportunity, reassignOwner }) {
+function CustomerDetail({ customer, employees, opportunities, projects, onBack, goToProject, goToOpportunity, reassignOwner, isBOD }) {
   const relatedOpps = opportunities.filter((o) => o.customerId === customer.id);
   const relatedProjects = projects.filter((p) => p.customerId === customer.id);
   const activeP = relatedProjects.filter((p) => p.status === "active");
@@ -1215,7 +1207,7 @@ function CustomerDetail({ customer, employees, opportunities, projects, onBack, 
         <div>
           <div className="pd-client"><Building2 size={13} /> {customer.industry}</div>
           <h1>{customer.company}</h1>
-          <OwnerReassignBox customer={customer} employees={employees} onReassign={(empId) => reassignOwner(customer.id, empId)} />
+          <OwnerReassignBox customer={customer} employees={employees} onReassign={(empId) => reassignOwner(customer.id, empId)} isBOD={isBOD} />
         </div>
         <TierBadge tier={customer.tier} />
       </div>
@@ -1268,7 +1260,7 @@ function CustomerDetail({ customer, employees, opportunities, projects, onBack, 
   );
 }
 
-function CustomersTab({ customers, employees, opportunities, projects, addCustomer, addEmployee, reassignOwner, toggleCustomerTier, goToProject, goToOpportunity }) {
+function CustomersTab({ customers, employees, opportunities, projects, addCustomer, reassignOwner, toggleCustomerTier, goToProject, goToOpportunity, isBOD }) {
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
   const [openCustomerId, setOpenCustomerId] = useState(null);
@@ -1280,7 +1272,7 @@ function CustomersTab({ customers, employees, opportunities, projects, addCustom
   const openCustomer = customers.find((c) => c.id === openCustomerId);
   if (openCustomer) {
     return <CustomerDetail customer={openCustomer} employees={employees} opportunities={opportunities} projects={projects}
-      onBack={() => setOpenCustomerId(null)} goToProject={goToProject} goToOpportunity={goToOpportunity} reassignOwner={reassignOwner} />;
+      onBack={() => setOpenCustomerId(null)} goToProject={goToProject} goToOpportunity={goToOpportunity} reassignOwner={reassignOwner} isBOD={isBOD} />;
   }
 
   return (
@@ -1290,19 +1282,19 @@ function CustomersTab({ customers, employees, opportunities, projects, addCustom
         <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm khách hàng</button>
       </div>
       <div className="search-row"><Search size={15} /><input className="input input-plain" placeholder="Tìm theo tên doanh nghiệp hoặc người liên hệ..." value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-      {showForm && <NewCustomerForm employees={employees} onCreateEmployee={addEmployee} onCancel={() => setShowForm(false)} onCreate={(c) => { addCustomer(c); setShowForm(false); }} />}
+      {showForm && <NewCustomerForm employees={employees} onCancel={() => setShowForm(false)} onCreate={(c) => { addCustomer(c); setShowForm(false); }} />}
       <div className="client-columns">
         <div className="client-col">
           <div className="client-col-head col-head-high">Tiềm năng Cao ({high.length})</div>
           <div className="client-col-body">
-            {high.map((c) => <CustomerCard key={c.id} c={c} onOpen={setOpenCustomerId} onToggleTier={toggleCustomerTier} />)}
+            {high.map((c) => <CustomerCard key={c.id} c={c} onOpen={setOpenCustomerId} onToggleTier={toggleCustomerTier} isBOD={isBOD} />)}
             {high.length === 0 && <div className="empty-note">Không có khách hàng nào.</div>}
           </div>
         </div>
         <div className="client-col">
           <div className="client-col-head col-head-normal">Tiềm năng Bình thường ({normal.length})</div>
           <div className="client-col-body">
-            {normal.map((c) => <CustomerCard key={c.id} c={c} onOpen={setOpenCustomerId} onToggleTier={toggleCustomerTier} />)}
+            {normal.map((c) => <CustomerCard key={c.id} c={c} onOpen={setOpenCustomerId} onToggleTier={toggleCustomerTier} isBOD={isBOD} />)}
             {normal.length === 0 && <div className="empty-note">Không có khách hàng nào.</div>}
           </div>
         </div>
@@ -1318,23 +1310,45 @@ function CustomersTab({ customers, employees, opportunities, projects, addCustom
 function NewEmployeeForm({ onCancel, onCreate }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("KD");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!name.trim() || !email.trim() || password.length < 6) {
+      setError("Vui lòng nhập đủ Họ tên, Email, và Password tối thiểu 6 ký tự.");
+      return;
+    }
+    setSubmitting(true); setError("");
+    const ok = await onCreate({ name: name.trim(), role, email: email.trim(), password });
+    setSubmitting(false);
+    if (ok) { setName(""); setEmail(""); setPassword(""); }
+  };
+
   return (
     <div className="inline-form">
+      <p className="pane-sub" style={{ marginBottom: 8 }}>
+        Tạo Nhân viên mới ở đây sẽ tạo LUÔN 1 tài khoản đăng nhập riêng (email + password) cho người đó — họ dùng tài khoản này để vào app.
+      </p>
       <div className="form-grid">
         <div className="form-row"><label>Họ tên</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: Nguyễn Văn A" /></div>
         <div className="form-row"><label>Vai trò</label>
-          <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}</select>
+          <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.filter((r) => r !== "BOD").map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}</select>
         </div>
+        <div className="form-row"><label>Email đăng nhập</label><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ten.nhanvien@xdnt.vn" /></div>
+        <div className="form-row"><label>Password tạm (nhân viên nên đổi sau)</label><input className="input" type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Tối thiểu 6 ký tự" /></div>
       </div>
+      {error && <div className="figure-debt" style={{ fontSize: 12, marginBottom: 6 }}>{error}</div>}
       <div className="form-actions">
-        <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
-        <button className="btn btn-primary btn-sm" onClick={() => name.trim() && onCreate({ name: name.trim(), role })}><Plus size={14} /> Thêm nhân viên</button>
+        <button className="btn btn-ghost btn-sm" onClick={onCancel} disabled={submitting}>Hủy</button>
+        <button className="btn btn-primary btn-sm" onClick={submit} disabled={submitting}><Plus size={14} /> {submitting ? "Đang tạo..." : "Tạo nhân viên & tài khoản"}</button>
       </div>
     </div>
   );
 }
 
-function EmployeeRow({ employee, summary, updateEmployee, toggleEmployeeActive }) {
+function EmployeeRow({ employee, summary, updateEmployee, toggleEmployeeActive, isBOD }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(employee.name);
   const [role, setRole] = useState(employee.role);
@@ -1351,17 +1365,19 @@ function EmployeeRow({ employee, summary, updateEmployee, toggleEmployeeActive }
         ) : (
           <div className="revenue-event-form" style={{ margin: 0 }}>
             <input className="input input-sm" value={name} onChange={(e) => setName(e.target.value)} />
-            <select className="input input-sm" style={{ maxWidth: 110 }} value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.map((r) => <option key={r} value={r}>{r}</option>)}</select>
+            <select className="input input-sm" style={{ maxWidth: 110 }} value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.filter((r) => r !== "BOD").map((r) => <option key={r} value={r}>{r}</option>)}</select>
           </div>
         )}
-        <div style={{ display: "flex", gap: 6 }}>
-          {!editing ? (
-            <button className="btn btn-ghost btn-sm" onClick={() => { setName(employee.name); setRole(employee.role); setEditing(true); }}><PenLine size={12} /> Sửa</button>
-          ) : (
-            <button className="btn btn-primary btn-sm" onClick={() => { if (name.trim()) { updateEmployee(employee.id, { name: name.trim(), role }); setEditing(false); } }}><Save size={12} /> Lưu</button>
-          )}
-          <button className="btn btn-ghost btn-sm" onClick={() => toggleEmployeeActive(employee.id)}>{employee.active ? "Ngừng hoạt động" : "Kích hoạt lại"}</button>
-        </div>
+        {isBOD && (
+          <div style={{ display: "flex", gap: 6 }}>
+            {!editing ? (
+              <button className="btn btn-ghost btn-sm" onClick={() => { setName(employee.name); setRole(employee.role); setEditing(true); }}><PenLine size={12} /> Sửa</button>
+            ) : (
+              <button className="btn btn-primary btn-sm" onClick={() => { if (name.trim()) { updateEmployee(employee.id, { name: name.trim(), role }); setEditing(false); } }}><Save size={12} /> Lưu</button>
+            )}
+            <button className="btn btn-ghost btn-sm" onClick={() => toggleEmployeeActive(employee.id)}>{employee.active ? "Ngừng hoạt động" : "Kích hoạt lại"}</button>
+          </div>
+        )}
       </div>
       <div className="pd-payment-figures" style={{ marginTop: 10 }}>
         <div><span className="dim">Khách hàng phụ trách</span><strong>{summary.customerCount}</strong></div>
@@ -1375,7 +1391,62 @@ function EmployeeRow({ employee, summary, updateEmployee, toggleEmployeeActive }
   );
 }
 
-function EmployeesTab({ employees, customers, opportunities, projects, addEmployee, updateEmployee, toggleEmployeeActive }) {
+function NewBodAccountForm({ onCancel, onCreate }) {
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!email.trim() || password.length < 6) {
+      setError("Vui lòng nhập đủ Email, và Password tối thiểu 6 ký tự.");
+      return;
+    }
+    setSubmitting(true); setError("");
+    const ok = await onCreate({ displayName: displayName.trim(), email: email.trim(), password });
+    setSubmitting(false);
+    if (ok) { setDisplayName(""); setEmail(""); setPassword(""); }
+  };
+
+  return (
+    <div className="inline-form">
+      <div className="form-grid">
+        <div className="form-row"><label>Tên hiển thị (VD: Anh Long — BOD)</label><input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></div>
+        <div className="form-row"><label>Email đăng nhập</label><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+        <div className="form-row"><label>Password tạm</label><input className="input" type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Tối thiểu 6 ký tự" /></div>
+      </div>
+      {error && <div className="figure-debt" style={{ fontSize: 12, marginBottom: 6 }}>{error}</div>}
+      <div className="form-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onCancel} disabled={submitting}>Hủy</button>
+        <button className="btn btn-primary btn-sm" onClick={submit} disabled={submitting}><Plus size={14} /> {submitting ? "Đang tạo..." : "Tạo tài khoản BOD"}</button>
+      </div>
+    </div>
+  );
+}
+
+function BodAccountsPanel({ bodUsers, addBodAccount }) {
+  const [showForm, setShowForm] = useState(false);
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="pd-payment-head">
+        <h3 className="panel-title" style={{ marginBottom: 0 }}>Tài khoản BOD</h3>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowForm((v) => !v)}><Plus size={13} /> Thêm tài khoản BOD</button>
+      </div>
+      <p className="pane-sub" style={{ margin: "6px 0 10px" }}>Mỗi thành viên BOD đăng nhập bằng tài khoản riêng — tất cả đều có toàn quyền ngang nhau.</p>
+      {showForm && <NewBodAccountForm onCancel={() => setShowForm(false)} onCreate={async (data) => { const ok = await addBodAccount(data); if (ok) setShowForm(false); return ok; }} />}
+      {bodUsers.length === 0 && <div className="empty-note">Chưa có dữ liệu (tài khoản BOD đầu tiên được tạo thủ công trong Firebase Console).</div>}
+      {bodUsers.map((u) => (
+        <div className="contact-item" key={u.id}>
+          <ShieldCheck size={14} />
+          <div><div className="contact-name">{u.displayName || u.email}</div><div className="dim">{u.email}</div></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmployeesTab({ employees, customers, opportunities, projects, addEmployee, updateEmployee, toggleEmployeeActive, isBOD, bodUsers, addBodAccount }) {
   const [showForm, setShowForm] = useState(false);
   const summaries = employeeSummary(employees, customers, opportunities, projects);
   const totalCollected = summaries.reduce((s, x) => s + x.collected, 0);
@@ -1385,10 +1456,14 @@ function EmployeesTab({ employees, customers, opportunities, projects, addEmploy
     <div className="tab-pane">
       <div className="pane-header">
         <div><h1>Nhân viên</h1><p className="pane-sub">Danh sách nhân viên phụ trách khách hàng, và doanh thu/công nợ quy về theo từng người.</p></div>
-        <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm nhân viên</button>
+        {isBOD && <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm nhân viên</button>}
       </div>
 
-      {showForm && <NewEmployeeForm onCancel={() => setShowForm(false)} onCreate={(data) => { addEmployee(data); setShowForm(false); }} />}
+      {!isBOD && <div className="perm-note" style={{ marginBottom: 12 }}>Chỉ BOD được thêm/sửa nhân viên và quản lý tài khoản đăng nhập.</div>}
+
+      {isBOD && <BodAccountsPanel bodUsers={bodUsers} addBodAccount={addBodAccount} />}
+
+      {showForm && isBOD && <NewEmployeeForm onCancel={() => setShowForm(false)} onCreate={async (data) => { const ok = await addEmployee(data); if (ok) setShowForm(false); return ok; }} />}
 
       <div className="kpi-row" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
         <KPICard icon={Users} tone="blue" label="Tổng số nhân viên" value={employees.length} sub={`${employees.filter((e) => e.active).length} đang hoạt động`} />
@@ -1396,7 +1471,7 @@ function EmployeesTab({ employees, customers, opportunities, projects, addEmploy
       </div>
 
       {sorted.map((s) => (
-        <EmployeeRow key={s.employee.id} employee={s.employee} summary={s} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} />
+        <EmployeeRow key={s.employee.id} employee={s.employee} summary={s} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} isBOD={isBOD} />
       ))}
       {sorted.length === 0 && <div className="empty-note">Chưa có nhân viên nào.</div>}
     </div>
@@ -1600,7 +1675,7 @@ function NewForecastRowForm({ industries, clientsByIndustry, onCancel, onCreate 
   );
 }
 
-function ForecastTab({ forecast, setForecast }) {
+function ForecastTab({ forecast, addForecastRow, updateForecastCell, removeForecastRow }) {
   const years = Array.from(new Set(forecast.map((r) => r.year))).sort();
   const [year, setYear] = useState(years[0] || 2026);
   const [showForm, setShowForm] = useState(false);
@@ -1623,8 +1698,8 @@ function ForecastTab({ forecast, setForecast }) {
   const totalCost = rows.reduce((s, r) => s + r.cost, 0);
   const totalProfit = totalRevenue - totalCost;
 
-  const updateCell = (id, field, val) => setForecast((prev) => prev.map((r) => r.id === id ? { ...r, [field]: Number(val) || 0 } : r));
-  const removeRow = (id) => setForecast((prev) => prev.filter((r) => r.id !== id));
+  const updateCell = updateForecastCell;
+  const removeRow = removeForecastRow;
 
   return (
     <div className="tab-pane">
@@ -1638,7 +1713,7 @@ function ForecastTab({ forecast, setForecast }) {
 
       {showForm && (
         <NewForecastRowForm industries={industries} clientsByIndustry={clientsByIndustry} onCancel={() => setShowForm(false)}
-          onCreate={(row) => { setForecast((prev) => [...prev, { id: uid("f"), ...row, year }]); setShowForm(false); }} />
+          onCreate={(row) => { addForecastRow({ ...row, year }); setShowForm(false); }} />
       )}
 
       <div className="kpi-row">
@@ -1688,6 +1763,70 @@ function ForecastTab({ forecast, setForecast }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  ĐĂNG NHẬP / PHÂN QUYỀN (Firebase Authentication)                        */
+/* ---------------------------------------------------------------------- */
+
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!email.trim() || !password) return;
+    setSubmitting(true); setError("");
+    try {
+      await onLogin(email.trim(), password);
+    } catch (err) {
+      const known = ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found", "auth/invalid-email"];
+      setError(known.includes(err?.code) ? "Email hoặc password không đúng." : "Không đăng nhập được — kiểm tra kết nối mạng và thử lại.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="login-screen">
+      <form className="login-box" onSubmit={submit}>
+        <div className="brand" style={{ marginBottom: 18 }}>
+          <div className="brand-mark">XD</div>
+          <div className="brand-text"><div className="brand-title">XD · Nội Thất</div><div className="brand-sub">TDDB — Vận hành trung tâm</div></div>
+        </div>
+        <h2 style={{ marginBottom: 4 }}>Đăng nhập</h2>
+        <p className="pane-sub" style={{ marginBottom: 16 }}>Dùng tài khoản riêng của bạn — mỗi thành viên BOD hoặc Nhân viên đều đăng nhập bằng email/password riêng.</p>
+        <div className="form-row"><label>Email</label><input className="input" type="email" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+        <div className="form-row"><label>Password</label><input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+        {error && <div className="figure-debt" style={{ fontSize: 13, marginBottom: 8 }}>{error}</div>}
+        <button className="btn btn-primary" type="submit" disabled={submitting} style={{ width: "100%", justifyContent: "center" }}>
+          <LogIn size={15} /> {submitting ? "Đang đăng nhập..." : "Đăng nhập"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function UnauthorizedScreen({ email, onSignOut }) {
+  return (
+    <div className="login-screen">
+      <div className="login-box">
+        <Lock size={26} className="figure-debt" style={{ marginBottom: 10 }} />
+        <h2 style={{ marginBottom: 8 }}>Tài khoản chưa được cấp quyền</h2>
+        <p className="pane-sub" style={{ marginBottom: 16 }}>
+          Tài khoản <strong>{email}</strong> đăng nhập được nhưng chưa được BOD cấp quyền dùng app này.
+          Liên hệ 1 thành viên BOD để được tạo tài khoản (vào tab "Nhân viên" → "Thêm nhân viên" hoặc "Thêm tài khoản BOD") hoặc cấp quyền thủ công trong Firestore.
+        </p>
+        <button className="btn btn-outline" onClick={onSignOut}><LogOut size={14} /> Đăng xuất</button>
+      </div>
+    </div>
+  );
+}
+
+function LoadingScreen({ label }) {
+  return <div className="login-screen"><div className="dim">{label || "Đang tải..."}</div></div>;
+}
+
+/* ---------------------------------------------------------------------- */
 /*  APP SHELL                                                              */
 /* ---------------------------------------------------------------------- */
 
@@ -1703,54 +1842,101 @@ const NAV = [
   { key: "forecast", label: "Sales Forecast", icon: TrendingUp },
 ];
 
-const STORAGE_KEY = "xdnt-dashboard-state-v4";
-
 export default function App() {
-  const initialCustomers = seedCustomers();
-  const initialProjects = seedProjects(initialCustomers);
-
   const [tab, setTab] = useState("dashboard");
-  const [employees, setEmployees] = useState(seedEmployees);
-  const [customers, setCustomers] = useState(initialCustomers);
-  const [opportunities, setOpportunities] = useState(() => seedOpportunities(initialCustomers));
-  const [projects, setProjects] = useState(initialProjects);
-  const [warrantyRecords, setWarrantyRecords] = useState(() => seedWarrantyRecords(initialProjects));
-  const [tasks, setTasks] = useState(seedTasks);
-  const [forecast, setForecast] = useState(seedForecast);
+  const [employees, setEmployees] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [opportunities, setOpportunities] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [warrantyRecords, setWarrantyRecords] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [forecast, setForecast] = useState([]);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(null);
-  const [selectedProjectCode, setSelectedProjectCode] = useState(initialProjects[0]?.code || null);
-  const [currentRole, setCurrentRole] = useState("BOD");
-  const [loaded, setLoaded] = useState(false);
-  const saveTimer = useRef(null);
+  const [selectedProjectCode, setSelectedProjectCode] = useState(null);
+  const [bodUsers, setBodUsers] = useState([]); // danh sách tài khoản BOD (mỗi thành viên BOD 1 tài khoản riêng)
 
-  /* ---- persistence (localStorage qua storage.js — xem README để đổi backend) ---- */
+  /* ---- đăng nhập (Firebase Auth) ---- */
+  const [authUser, setAuthUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  // userProfile: undefined = đang tải hồ sơ, null = đã đăng nhập nhưng chưa được cấp quyền, object = OK.
+  const [userProfile, setUserProfile] = useState(undefined);
+
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await storage.get(STORAGE_KEY);
-        if (res && res.value) {
-          const data = JSON.parse(res.value);
-          if (data.employees) setEmployees(data.employees);
-          if (data.customers) setCustomers(data.customers);
-          if (data.opportunities) setOpportunities(data.opportunities);
-          if (data.projects) setProjects(data.projects);
-          if (data.warrantyRecords) setWarrantyRecords(data.warrantyRecords);
-          if (data.tasks) setTasks(data.tasks);
-          if (data.forecast) setForecast(data.forecast);
-        }
-      } catch (e) { /* chưa có dữ liệu lưu trước đó */ } finally { setLoaded(true); }
-    })();
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUser(u);
+      setAuthReady(true);
+      if (!u) setUserProfile(undefined);
+    });
+    return unsub;
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try { await storage.set(STORAGE_KEY, JSON.stringify({ employees, customers, opportunities, projects, warrantyRecords, tasks, forecast })); }
-      catch (e) { /* ignore */ }
-    }, 500);
-    return () => clearTimeout(saveTimer.current);
-  }, [employees, customers, opportunities, projects, warrantyRecords, tasks, forecast, loaded]);
+    if (!authUser) return;
+    setUserProfile(undefined);
+    const unsub = onDocSnapshot(
+      doc(db, "users", authUser.uid),
+      (snap) => setUserProfile(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+      () => setUserProfile(null)
+    );
+    return unsub;
+  }, [authUser]);
+
+  const handleLogin = useCallback((email, password) => signInWithEmailAndPassword(auth, email, password), []);
+  const handleSignOut = useCallback(() => { fbSignOut(auth); }, []);
+
+  /* ---- vai trò hiện tại: suy ra từ danh tính đăng nhập, KHÔNG còn nút bấm thủ công ---- */
+  // Mỗi thành viên BOD có tài khoản riêng (không dùng chung 1 email/password) —
+  // nhưng mọi tài khoản có role="BOD" đều có toàn quyền ngang nhau.
+  const currentRole = !userProfile ? "KD" : userProfile.role === "BOD" ? "BOD" : (employees.find((e) => e.id === userProfile.employeeId)?.role || "KD");
+  const isBOD = currentRole === "BOD";
+  const myDisplayName = !userProfile ? "" : userProfile.role === "BOD"
+    ? (userProfile.displayName || userProfile.email)
+    : (employees.find((e) => e.id === userProfile.employeeId)?.name || userProfile.displayName || userProfile.email);
+
+  /* ---- đồng bộ dữ liệu real-time qua Firestore (thay cho localStorage) ---- */
+  useEffect(() => {
+    if (!authUser || !userProfile) return;
+    const unsubs = [
+      subscribeCollection("employees", setEmployees),
+      subscribeCollection("customers", setCustomers),
+      subscribeCollection("opportunities", setOpportunities),
+      subscribeCollection("projects", setProjects),
+      subscribeCollection("warrantyRecords", setWarrantyRecords),
+      subscribeCollection("tasks", setTasks),
+      subscribeCollection("forecastRows", setForecast),
+    ];
+    // Danh sách tài khoản BOD chỉ BOD mới đọc được toàn bộ collection "users"
+    // (Staff chỉ đọc được đúng hồ sơ của mình theo firestore.rules) — chỉ
+    // subscribe khi mình là BOD để tránh permission-denied không cần thiết.
+    if (userProfile.role === "BOD") {
+      unsubs.push(subscribeCollection("users", (rows) => setBodUsers(rows.filter((u) => u.role === "BOD"))));
+    }
+    return () => unsubs.forEach((u) => u());
+  }, [authUser, userProfile]);
+
+  /* ---- nhập dữ liệu MẪU 1 lần (chỉ khi Firestore còn trống, chỉ BOD) ---- */
+  const seedDemoData = useCallback(async () => {
+    try {
+      const emps = seedEmployees();
+      const custs = seedCustomers();
+      const projs = seedProjects(custs);
+      const opps = seedOpportunities(custs);
+      const warr = seedWarrantyRecords(projs);
+      const tks = seedTasks();
+      const fc = seedForecast();
+      await Promise.all([
+        ...emps.map((e) => saveDoc("employees", e.id, e)),
+        ...custs.map((c) => saveDoc("customers", c.id, c)),
+        ...projs.map((p) => saveDoc("projects", p.id, p)),
+        ...opps.map((o) => saveDoc("opportunities", o.id, o)),
+        ...warr.map((w) => saveDoc("warrantyRecords", w.id, w)),
+        ...tks.map((t) => saveDoc("tasks", t.id, t)),
+        ...fc.map((f) => saveDoc("forecastRows", f.id, f)),
+      ]);
+    } catch (e) {
+      alert("Nhập dữ liệu mẫu thất bại: " + (e?.message || "lỗi không xác định"));
+    }
+  }, []);
 
   /* ---- helper: advance 1 bước + tự resolve điểm nghẽn nếu vừa xử lý xong bước bị trả về ---- */
   const advanceFlow = (flow, stageDefs, role) => {
@@ -1761,118 +1947,200 @@ export default function App() {
     if (openBn && stageIdBefore === openBn.stageId - 1) updated = resolveLastBottleneck(updated, now);
     return updated;
   };
+  const onWriteError = (e) => alert(explainWriteError(e));
 
   /* ---- opportunity actions ---- */
-  const addOpportunity = useCallback((data) => setOpportunities((prev) => [...prev, makeOpportunity(data)]), []);
-  const toggleOppGate = useCallback((id, stageId, idx) => setOpportunities((prev) => prev.map((o) => o.id === id ? toggleGateCheck(o, stageId, idx) : o)), []);
-  const advanceOpportunity = useCallback((id) => setOpportunities((prev) => prev.map((o) => o.id === id ? advanceFlow(o, OPP_STAGES, currentRole) : o)), [currentRole]);
-  const sendBackOpportunity = useCallback((id, reason) => setOpportunities((prev) => prev.map((o) => o.id === id ? sendBackGate(o, reason, currentRole, todayISO()) : o)), [currentRole]);
+  const addOpportunity = useCallback((data) => {
+    const opp = makeOpportunity(data);
+    saveDoc("opportunities", opp.id, opp).catch(onWriteError);
+  }, []);
+  const toggleOppGate = useCallback((id, stageId, idx) => {
+    const o = opportunities.find((x) => x.id === id);
+    if (o) saveDoc("opportunities", id, toggleGateCheck(o, stageId, idx)).catch(onWriteError);
+  }, [opportunities]);
+  const advanceOpportunity = useCallback((id) => {
+    const o = opportunities.find((x) => x.id === id);
+    if (o) saveDoc("opportunities", id, advanceFlow(o, OPP_STAGES, currentRole)).catch(onWriteError);
+  }, [opportunities, currentRole]);
+  const sendBackOpportunity = useCallback((id, reason) => {
+    const o = opportunities.find((x) => x.id === id);
+    if (o) saveDoc("opportunities", id, sendBackGate(o, reason, currentRole, todayISO())).catch(onWriteError);
+  }, [opportunities, currentRole]);
 
   const markWon = useCallback((id) => {
     const now = todayISO();
-    setProjects((prevProjects) => {
-      const opp = opportunities.find((o) => o.id === id);
-      if (!opp) return prevProjects;
-      const code = nextProjectCode(prevProjects);
-      const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: opp.value, createdAt: now });
-      setOpportunities((prevOpp) => prevOpp.map((o) => o.id === id ? {
-        ...o, status: "won", wonProjectCode: code,
-        stages: { ...o.stages, [OPP_DECISION_STAGE_ID]: { ...o.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: now, completedBy: currentRole } },
-      } : o));
-      setSelectedProjectCode(code);
-      setTab("projects");
-      return [...prevProjects, project];
-    });
-  }, [opportunities, currentRole]);
+    const opp = opportunities.find((o) => o.id === id);
+    if (!opp) return;
+    const code = nextProjectCode(projects);
+    const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: opp.value, createdAt: now });
+    const updatedOpp = {
+      ...opp, status: "won", wonProjectCode: code,
+      stages: { ...opp.stages, [OPP_DECISION_STAGE_ID]: { ...opp.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: now, completedBy: currentRole } },
+    };
+    Promise.all([saveDoc("projects", project.id, project), saveDoc("opportunities", id, updatedOpp)])
+      .then(() => { setSelectedProjectCode(code); setTab("projects"); })
+      .catch(onWriteError);
+  }, [opportunities, projects, currentRole]);
 
   const markLost = useCallback((id, reason) => {
     const now = todayISO();
-    setOpportunities((prev) => prev.map((o) => o.id === id ? {
+    const o = opportunities.find((x) => x.id === id);
+    if (!o) return;
+    const updated = {
       ...o, status: "lost", lostReason: reason,
       stages: { ...o.stages, [OPP_DECISION_STAGE_ID]: { ...o.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: now, completedBy: currentRole } },
-    } : o));
-  }, [currentRole]);
+    };
+    saveDoc("opportunities", id, updated).catch(onWriteError);
+  }, [opportunities, currentRole]);
 
   /* ---- project actions ---- */
-  const updateProject = useCallback((id, patch) => setProjects((prev) => prev.map((p) => p.id === id ? { ...p, ...patch } : p)), []);
-  const toggleProjectGate = useCallback((id, stageId, idx) => setProjects((prev) => prev.map((p) => p.id === id ? toggleGateCheck(p, stageId, idx) : p)), []);
+  const updateProject = useCallback((id, patch) => {
+    const p = projects.find((x) => x.id === id);
+    if (p) saveDoc("projects", id, { ...p, ...patch }).catch(onWriteError);
+  }, [projects]);
+  const toggleProjectGate = useCallback((id, stageId, idx) => {
+    const p = projects.find((x) => x.id === id);
+    if (p) saveDoc("projects", id, toggleGateCheck(p, stageId, idx)).catch(onWriteError);
+  }, [projects]);
 
   const advanceProject = useCallback((id) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== id) return p;
-      let updated = advanceFlow(p, PROJECT_STAGES, currentRole);
-      if (updated.currentStage === PROJECT_FINAL_STAGE_ID && updated.stages[PROJECT_FINAL_STAGE_ID].state === "done") {
-        updated = { ...updated, status: "closed" };
-      }
-      return updated;
-    }));
-  }, [currentRole]);
+    const p = projects.find((x) => x.id === id);
+    if (!p) return;
+    let updated = advanceFlow(p, PROJECT_STAGES, currentRole);
+    if (updated.currentStage === PROJECT_FINAL_STAGE_ID && updated.stages[PROJECT_FINAL_STAGE_ID].state === "done") {
+      updated = { ...updated, status: "closed" };
+    }
+    saveDoc("projects", id, updated).catch(onWriteError);
+  }, [projects, currentRole]);
 
-  const sendBackProject = useCallback((id, reason) => setProjects((prev) => prev.map((p) => p.id === id ? sendBackGate(p, reason, currentRole, todayISO()) : p)), [currentRole]);
+  const sendBackProject = useCallback((id, reason) => {
+    const p = projects.find((x) => x.id === id);
+    if (p) saveDoc("projects", id, sendBackGate(p, reason, currentRole, todayISO())).catch(onWriteError);
+  }, [projects, currentRole]);
 
   const createProject = useCallback((data) => {
-    setProjects((prev) => {
-      const code = nextProjectCode(prev);
-      const project = makeProject(code, data);
-      setSelectedProjectCode(code);
-      return [...prev, project];
-    });
-  }, []);
+    const code = nextProjectCode(projects);
+    const project = makeProject(code, data);
+    saveDoc("projects", project.id, project).then(() => setSelectedProjectCode(code)).catch(onWriteError);
+  }, [projects]);
 
   const addRevenueEvent = useCallback((id, type, date, amount, note) => {
-    setProjects((prev) => prev.map((p) => p.id === id ? { ...p, revenueEvents: [...(p.revenueEvents || []), makeRevenueEvent(type, date, amount, note)] } : p));
-  }, []);
+    const p = projects.find((x) => x.id === id);
+    if (p) saveDoc("projects", id, { ...p, revenueEvents: [...(p.revenueEvents || []), makeRevenueEvent(type, date, amount, note)] }).catch(onWriteError);
+  }, [projects]);
 
   const addCost = useCallback((id, category, budget, actual) => {
-    setProjects((prev) => prev.map((p) => p.id === id ? { ...p, costs: [...(p.costs || []), makeCost(category, budget, actual)] } : p));
-  }, []);
+    const p = projects.find((x) => x.id === id);
+    if (p) saveDoc("projects", id, { ...p, costs: [...(p.costs || []), makeCost(category, budget, actual)] }).catch(onWriteError);
+  }, [projects]);
 
   /* ---- warranty auto-tạo khi dự án vào bước Warranty ---- */
   useEffect(() => {
-    if (!loaded) return;
+    if (!authUser || !userProfile) return;
     const missing = projects.filter((p) => p.currentStage >= PROJECT_WARRANTY_STAGE_ID && !warrantyRecords.some((r) => r.projectCode === p.code));
-    if (missing.length) {
-      setWarrantyRecords((prev) => [...prev, ...missing.map((p) => ({ ...makeWarrantyRecord(p), transferredAt: p.stages[PROJECT_ACCEPTANCE_STAGE_ID]?.completedAt || todayISO() }))]);
-    }
-  }, [projects, warrantyRecords, loaded]);
+    missing.forEach((p) => {
+      const rec = { ...makeWarrantyRecord(p), transferredAt: p.stages[PROJECT_ACCEPTANCE_STAGE_ID]?.completedAt || todayISO() };
+      saveDoc("warrantyRecords", rec.id, rec).catch(() => {});
+    });
+  }, [projects, warrantyRecords, authUser, userProfile]);
 
   /* ---- warranty actions ---- */
-  const addWarrantyNote = useCallback((recordId, text) => setWarrantyRecords((prev) => prev.map((r) => r.id === recordId ? { ...r, notes: [...r.notes, { id: uid("nt"), date: todayISO(), text }] } : r)), []);
-  const closeWarrantyRecord = useCallback((recordId) => setWarrantyRecords((prev) => prev.map((r) => r.id === recordId ? { ...r, status: "completed" } : r)), []);
+  const addWarrantyNote = useCallback((recordId, text) => {
+    const r = warrantyRecords.find((x) => x.id === recordId);
+    if (r) saveDoc("warrantyRecords", recordId, { ...r, notes: [...r.notes, { id: uid("nt"), date: todayISO(), text }] }).catch(onWriteError);
+  }, [warrantyRecords]);
+  const closeWarrantyRecord = useCallback((recordId) => {
+    const r = warrantyRecords.find((x) => x.id === recordId);
+    if (r) saveDoc("warrantyRecords", recordId, { ...r, status: "completed" }).catch(onWriteError);
+  }, [warrantyRecords]);
 
   /* ---- task actions ---- */
-  const addTask = useCallback((data) => setTasks((prev) => [...prev, makeTask(data)]), []);
-  const toggleTaskDone = useCallback((id) => setTasks((prev) => prev.map((t) => t.id === id ? { ...t, status: t.status === "open" ? "done" : "open" } : t)), []);
-  const removeTask = useCallback((id) => setTasks((prev) => prev.filter((t) => t.id !== id)), []);
+  const addTask = useCallback((data) => { const t = makeTask(data); saveDoc("tasks", t.id, t).catch(onWriteError); }, []);
+  const toggleTaskDone = useCallback((id) => {
+    const t = tasks.find((x) => x.id === id);
+    if (t) saveDoc("tasks", id, { ...t, status: t.status === "open" ? "done" : "open" }).catch(onWriteError);
+  }, [tasks]);
+  const removeTask = useCallback((id) => removeDoc("tasks", id).catch(onWriteError), []);
 
   /* ---- customer actions ---- */
-  const addCustomer = useCallback((c) => setCustomers((prev) => [...prev, { id: uid("c"), ...c }]), []);
-  const toggleCustomerTier = useCallback((id) => setCustomers((prev) => prev.map((c) => c.id === id ? { ...c, tier: c.tier === "high" ? "normal" : "high" } : c)), []);
+  const addCustomer = useCallback((c) => {
+    const newC = { id: uid("c"), ...c };
+    saveDoc("customers", newC.id, newC).catch(onWriteError);
+  }, []);
+  const toggleCustomerTier = useCallback((id) => {
+    const c = customers.find((x) => x.id === id);
+    if (c) saveDoc("customers", id, { ...c, tier: c.tier === "high" ? "normal" : "high" }).catch(onWriteError);
+  }, [customers]);
   const reassignOwner = useCallback((customerId, employeeId) => {
-    setCustomers((prev) => prev.map((c) => {
-      if (c.id !== customerId) return c;
-      if (!employeeId) return { ...c, accountOwnerId: null, accountOwnerName: "" };
-      const emp = employees.find((e) => e.id === employeeId);
-      return { ...c, accountOwnerId: employeeId, accountOwnerName: emp ? emp.name : c.accountOwnerName };
-    }));
+    const c = customers.find((x) => x.id === customerId);
+    if (!c) return;
+    const updated = !employeeId
+      ? { ...c, accountOwnerId: null, accountOwnerName: "" }
+      : { ...c, accountOwnerId: employeeId, accountOwnerName: employees.find((e) => e.id === employeeId)?.name || c.accountOwnerName };
+    saveDoc("customers", customerId, updated).catch(onWriteError);
+  }, [customers, employees]);
+
+  /* ---- employee (nhân viên phụ trách) actions — kèm tạo tài khoản Firebase Auth thật ---- */
+  const addEmployee = useCallback(async (data) => {
+    try {
+      const emp = makeEmployee({ name: data.name, role: data.role });
+      const authUid = await createStaffAuthAccount(data.email, data.password);
+      await saveDoc("users", authUid, { email: data.email, role: "STAFF", employeeId: emp.id, displayName: data.name });
+      await saveDoc("employees", emp.id, emp);
+      return true;
+    } catch (e) {
+      alert("Không tạo được nhân viên/tài khoản: " + (e?.message || "lỗi không xác định"));
+      return false;
+    }
+  }, []);
+
+  /* ---- tài khoản BOD — mỗi thành viên BOD 1 tài khoản riêng, toàn quyền ngang nhau ---- */
+  const addBodAccount = useCallback(async (data) => {
+    try {
+      const authUid = await createStaffAuthAccount(data.email, data.password);
+      await saveDoc("users", authUid, { email: data.email, role: "BOD", displayName: data.displayName || data.email });
+      return true;
+    } catch (e) {
+      alert("Không tạo được tài khoản BOD: " + (e?.message || "lỗi không xác định"));
+      return false;
+    }
+  }, []);
+
+  const updateEmployee = useCallback((id, patch) => {
+    const emp = employees.find((e) => e.id === id);
+    if (!emp) return;
+    saveDoc("employees", id, { ...emp, ...patch }).catch(onWriteError);
+    if (patch.name) {
+      customers.filter((c) => c.accountOwnerId === id).forEach((c) => { saveDoc("customers", c.id, { ...c, accountOwnerName: patch.name }).catch(() => {}); });
+    }
+  }, [employees, customers]);
+  const toggleEmployeeActive = useCallback((id) => {
+    const emp = employees.find((e) => e.id === id);
+    if (emp) saveDoc("employees", id, { ...emp, active: !emp.active }).catch(onWriteError);
   }, [employees]);
 
-  /* ---- employee (nhân viên phụ trách) actions ---- */
-  const addEmployee = useCallback((data) => {
-    const emp = makeEmployee(data);
-    setEmployees((prev) => [...prev, emp]);
-    return emp;
+  /* ---- forecast (Sales Forecast) actions ---- */
+  const addForecastRow = useCallback((row) => {
+    const newRow = { id: uid("f"), ...row };
+    saveDoc("forecastRows", newRow.id, newRow).catch(onWriteError);
   }, []);
-  const updateEmployee = useCallback((id, patch) => {
-    setEmployees((prev) => prev.map((e) => e.id === id ? { ...e, ...patch } : e));
-    if (patch.name) setCustomers((prev) => prev.map((c) => c.accountOwnerId === id ? { ...c, accountOwnerName: patch.name } : c));
-  }, []);
-  const toggleEmployeeActive = useCallback((id) => setEmployees((prev) => prev.map((e) => e.id === id ? { ...e, active: !e.active } : e)), []);
+  const updateForecastCell = useCallback((id, field, val) => {
+    const r = forecast.find((x) => x.id === id);
+    if (r) saveDoc("forecastRows", id, { ...r, [field]: Number(val) || 0 }).catch(onWriteError);
+  }, [forecast]);
+  const removeForecastRow = useCallback((id) => removeDoc("forecastRows", id).catch(onWriteError), []);
 
   /* ---- navigation ---- */
   const goToProject = useCallback((code) => { setSelectedProjectCode(code); setTab("projects"); }, []);
   const goToOpportunity = useCallback((id) => { setSelectedOpportunityId(id); setTab("opportunities"); }, []);
   const goToEmployees = useCallback(() => setTab("employees"), []);
+
+  if (!authReady) return <LoadingScreen label="Đang kiểm tra đăng nhập..." />;
+  if (!authUser) return <LoginScreen onLogin={handleLogin} />;
+  if (userProfile === undefined) return <LoadingScreen label="Đang tải hồ sơ người dùng..." />;
+  if (userProfile === null) return <UnauthorizedScreen email={authUser.email} onSignOut={handleSignOut} />;
+
+  const isEmptyDatabase = employees.length === 0 && customers.length === 0 && projects.length === 0 && opportunities.length === 0;
 
   return (
     <div className="xdnt-app">
@@ -1891,16 +2159,29 @@ export default function App() {
         <div className="sidebar-foot">
           <div className="foot-line" />
           <div className="role-switch">
-            <div className="role-switch-label">Vai trò hiện tại</div>
-            {ROLES.map((r) => (
-              <button key={r} className={`role-btn ${currentRole === r ? "role-btn-active" : ""}`} onClick={() => setCurrentRole(r)}>{r}</button>
-            ))}
+            <div className="role-switch-label">Đang đăng nhập</div>
+            <div className="employee-name-block" style={{ marginBottom: 8 }}>
+              <span className="employee-name">{myDisplayName}</span>
+              <span className="chip chip-tiny">{ROLE_LABELS[currentRole]}</span>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={handleSignOut} style={{ width: "100%", justifyContent: "center" }}>
+              <LogOut size={13} /> Đăng xuất
+            </button>
           </div>
-          <div className="foot-note">Vai trò quyết định bước nào bạn được phép hoàn thành; chỉ BOD được ghi nhận WON/LOST và đóng dự án ở bước cuối. Dữ liệu lưu tự động trên trình duyệt (localStorage).</div>
+          <div className="foot-note">Vai trò của bạn quyết định bước nào bạn được phép hoàn thành; chỉ BOD được ghi nhận WON/LOST, đóng dự án, sửa thông tin gốc, xoá dữ liệu, và quản lý nhân viên. Dữ liệu đồng bộ real-time qua Firebase.</div>
         </div>
       </aside>
 
       <main className="main">
+        {isBOD && isEmptyDatabase && (
+          <div className="panel" style={{ margin: 16 }}>
+            <h3 className="panel-title">Cơ sở dữ liệu đang trống</h3>
+            <p className="pane-sub" style={{ marginBottom: 10 }}>
+              Chưa có dữ liệu nào trên Firestore. Bấm nút dưới để nhập 1 bộ dữ liệu MẪU (khách hàng/cơ hội/dự án demo) vào để xem thử giao diện — có thể xoá sau trong Firestore Console bất cứ lúc nào.
+            </p>
+            <button className="btn btn-primary btn-sm" onClick={seedDemoData}><Database size={14} /> Nhập dữ liệu mẫu để test</button>
+          </div>
+        )}
         {tab === "dashboard" && (
           <DashboardTab employees={employees} customers={customers} opportunities={opportunities} projects={projects} tasks={tasks}
             warrantyRecords={warrantyRecords} goToProject={goToProject} goToOpportunity={goToOpportunity} goToEmployees={goToEmployees} />
@@ -1919,17 +2200,18 @@ export default function App() {
         )}
         {tab === "customers" && (
           <CustomersTab customers={customers} employees={employees} opportunities={opportunities} projects={projects}
-            addCustomer={addCustomer} addEmployee={addEmployee} reassignOwner={reassignOwner}
-            toggleCustomerTier={toggleCustomerTier} goToProject={goToProject} goToOpportunity={goToOpportunity} />
+            addCustomer={addCustomer} reassignOwner={reassignOwner}
+            toggleCustomerTier={toggleCustomerTier} goToProject={goToProject} goToOpportunity={goToOpportunity} isBOD={isBOD} />
         )}
         {tab === "employees" && (
           <EmployeesTab employees={employees} customers={customers} opportunities={opportunities} projects={projects}
-            addEmployee={addEmployee} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} />
+            addEmployee={addEmployee} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} isBOD={isBOD}
+            bodUsers={bodUsers} addBodAccount={addBodAccount} />
         )}
-        {tab === "tasks" && <TasksTab tasks={tasks} projects={projects} addTask={addTask} toggleTaskDone={toggleTaskDone} removeTask={removeTask} goToProject={goToProject} />}
-        {tab === "warranty" && <WarrantyTab warrantyRecords={warrantyRecords} addWarrantyNote={addWarrantyNote} closeWarrantyRecord={closeWarrantyRecord} goToProject={goToProject} />}
+        {tab === "tasks" && <TasksTab tasks={tasks} projects={projects} addTask={addTask} toggleTaskDone={toggleTaskDone} removeTask={removeTask} goToProject={goToProject} isBOD={isBOD} />}
+        {tab === "warranty" && <WarrantyTab warrantyRecords={warrantyRecords} addWarrantyNote={addWarrantyNote} closeWarrantyRecord={closeWarrantyRecord} goToProject={goToProject} isBOD={isBOD} />}
         {tab === "sop" && <SopTab opportunities={opportunities} projects={projects} customers={customers} goToProject={goToProject} goToOpportunity={goToOpportunity} />}
-        {tab === "forecast" && <ForecastTab forecast={forecast} setForecast={setForecast} />}
+        {tab === "forecast" && <ForecastTab forecast={forecast} addForecastRow={addForecastRow} updateForecastCell={updateForecastCell} removeForecastRow={removeForecastRow} />}
       </main>
     </div>
   );

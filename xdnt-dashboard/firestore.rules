@@ -1,0 +1,131 @@
+rules_version = '2';
+
+// ---------------------------------------------------------------------------
+// FIRESTORE SECURITY RULES — xdnt-dashboard
+// ---------------------------------------------------------------------------
+// Cách áp dụng: Firebase Console → Firestore Database → tab "Rules" →
+// xoá hết nội dung cũ → dán toàn bộ nội dung file này vào → bấm "Publish".
+//
+// MÔ HÌNH PHÂN QUYỀN (2 tầng):
+//   BOD   — MỖI thành viên BOD có tài khoản đăng nhập RIÊNG (không dùng
+//           chung 1 email/password), nhưng tất cả tài khoản có role="BOD"
+//           đều có TOÀN quyền đọc/ghi/xoá mọi thứ, ngang nhau.
+//   STAFF — mỗi nhân viên 1 tài khoản riêng. Được: tạo mới khách hàng/cơ
+//           hội/dự án/task, tick checklist và đẩy Stage-Gate của bước mình
+//           đang phụ trách TIẾN lên (không được lùi), ghi nhận thu tiền/chi
+//           phí/ghi chú bảo hành. KHÔNG được: đổi các thông tin GỐC đã chốt
+//           (tên/khách hàng/giá trị hợp đồng), đưa currentStage lùi lại
+//           ("báo điểm nghẽn — trả về bước trước" giờ CHỈ BOD làm được, vì
+//           việc này đồng nghĩa mở lại 1 bước đã "Hoàn thành" — bước đã
+//           hoàn thành coi như tự khoá, chỉ BOD mở lại), chốt kết quả
+//           WON/LOST, đóng dự án, đóng hồ sơ bảo hành, xoá bất cứ gì, hoặc
+//           quản lý nhân viên/tài khoản — những việc đó chỉ BOD được làm.
+//
+// Mỗi user đăng nhập (từng thành viên BOD lẫn từng Nhân viên) đều có 1
+// document tương ứng ở collection "users", key = Firebase Auth UID, dạng:
+//   { email, role: "BOD" | "STAFF", employeeId, displayName }
+// Xem hướng dẫn tạo document đầu tiên (cho thành viên BOD đầu tiên) ở
+// hướng dẫn kèm theo — sau đó BOD tạo thêm tài khoản BOD/Nhân viên khác
+// ngay trong app (tab "Nhân viên").
+// ---------------------------------------------------------------------------
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function myUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isRecognized() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    function isBOD() {
+      return isSignedIn() && isRecognized() && myUserDoc().role == 'BOD';
+    }
+    // "unchanged(field)" — field không được thay đổi so với document hiện tại.
+    function unchanged(field) {
+      return request.resource.data[field] == resource.data[field];
+    }
+
+    // ---- users — mỗi user tự đọc hồ sơ của mình; chỉ BOD được đọc tất cả /
+    //      tạo, sửa, xoá (tạo tài khoản Nhân viên đi kèm việc tạo doc ở đây). ----
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isBOD());
+      allow create, update, delete: if isBOD();
+    }
+
+    // ---- employees (roster nhân viên phụ trách) — chỉ BOD quản lý. ----
+    match /employees/{employeeId} {
+      allow read: if isRecognized();
+      allow create, update, delete: if isBOD();
+    }
+
+    // ---- customers — Staff được tạo mới; BOD mới được sửa/xoá (đổi nhân
+    //      viên phụ trách, đổi nhóm tiềm năng, sửa thông tin...). ----
+    match /customers/{customerId} {
+      allow read: if isRecognized();
+      allow create: if isRecognized();
+      allow update, delete: if isBOD();
+    }
+
+    // ---- opportunities — Staff tạo mới + cập nhật Stage-Gate (currentStage,
+    //      stages, bottlenecks) bình thường; nhưng KHÔNG được tự đổi các
+    //      trường "quyết định": title/customerId/value/status/wonProjectCode/
+    //      lostReason — những trường đó chỉ BOD được đổi (khớp với việc UI
+    //      chỉ cho BOD bấm WON/LOST ở bước cuối). ----
+    match /opportunities/{oppId} {
+      allow read: if isRecognized();
+      allow create: if isRecognized();
+      allow update: if isBOD() || (
+        isRecognized() &&
+        request.resource.data.currentStage >= resource.data.currentStage &&
+        unchanged('title') && unchanged('customerId') && unchanged('customerName') &&
+        unchanged('value') && unchanged('status') &&
+        unchanged('wonProjectCode') && unchanged('lostReason')
+      );
+      allow delete: if isBOD();
+    }
+
+    // ---- projects — tương tự opportunities: Staff tạo mới + cập nhật
+    //      Stage-Gate/doanh thu/chi phí bình thường; KHÔNG được tự đổi
+    //      name/customerId/scope/contractValue/status (đóng dự án CLOSED
+    //      chỉ xảy ra khi BOD hoàn thành bước cuối). ----
+    match /projects/{projectId} {
+      allow read: if isRecognized();
+      allow create: if isRecognized();
+      allow update: if isBOD() || (
+        isRecognized() &&
+        request.resource.data.currentStage >= resource.data.currentStage &&
+        unchanged('name') && unchanged('customerId') && unchanged('customerName') &&
+        unchanged('scope') && unchanged('contractValue') && unchanged('status')
+      );
+      allow delete: if isBOD();
+    }
+
+    // ---- tasks — Staff full create/update (đây là công việc thường ngày);
+    //      chỉ BOD được xoá task. ----
+    match /tasks/{taskId} {
+      allow read: if isRecognized();
+      allow create, update: if isRecognized();
+      allow delete: if isBOD();
+    }
+
+    // ---- warrantyRecords — tự động tạo khi dự án vào bước Warranty (Staff
+    //      lẫn BOD đều có thể là người đang mở app lúc đó); Staff được thêm
+    //      ghi chú chăm sóc nhưng không được tự đóng hồ sơ (status). ----
+    match /warrantyRecords/{recordId} {
+      allow read: if isRecognized();
+      allow create: if isRecognized();
+      allow update: if isBOD() || (isRecognized() && unchanged('status'));
+      allow delete: if isBOD();
+    }
+
+    // ---- forecastRows — số liệu dự báo kế hoạch, không phải sổ ghi nhận
+    //      chính thức → để mở cho cả Staff và BOD toàn quyền. ----
+    match /forecastRows/{rowId} {
+      allow read, create, update, delete: if isRecognized();
+    }
+  }
+}
