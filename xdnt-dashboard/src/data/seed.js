@@ -247,13 +247,51 @@ export function makeWarrantyRecord(project) {
 export const SOP_BOTTLENECK_CONVERSION = 50;
 
 /* ---------------------------------------------------------------------- */
+/*  NHÂN VIÊN (Employee) — roster có thể thêm/sửa/đổi vai trò/ngừng hoạt động */
+/* ---------------------------------------------------------------------- */
+// Mọi "Nhân viên phụ trách" gắn vào Khách hàng đều tham chiếu tới đúng 1 bản
+// ghi ở đây qua accountOwnerId — không còn nhập tay tên tự do.
+
+export function makeEmployee(data) {
+  return { id: uid("emp"), name: data.name, role: data.role || "KD", active: data.active !== false };
+}
+
+export function seedEmployees() {
+  return [
+    { id: "e1", name: "Nguyễn Văn Long", role: "KD", active: true },
+    { id: "e2", name: "Phạm Thu Hà", role: "KD", active: true },
+    { id: "e3", name: "Lê Gia Bảo", role: "KD", active: true },
+    { id: "e4", name: "Trần Minh Hùng", role: "BP", active: true },
+  ];
+}
+
+/** Doanh thu / công nợ / pipeline quy về theo từng Nhân viên phụ trách khách hàng. */
+export function employeeSummary(employees, customers, opportunities, projects) {
+  return employees.map((e) => {
+    const ownedCustomers = customers.filter((c) => c.accountOwnerId === e.id);
+    const ownedCustomerIds = new Set(ownedCustomers.map((c) => c.id));
+    const ownedProjects = projects.filter((p) => p.customerId && ownedCustomerIds.has(p.customerId));
+    const ownedOpenOpps = opportunities.filter((o) => o.status === "open" && o.customerId && ownedCustomerIds.has(o.customerId));
+    return {
+      employee: e,
+      customerCount: ownedCustomers.length,
+      projectCount: ownedProjects.length,
+      pipelineValue: ownedOpenOpps.reduce((s, o) => s + o.value, 0),
+      contractValue: ownedProjects.reduce((s, p) => s + p.contractValue, 0),
+      collected: ownedProjects.reduce((s, p) => s + projectCollected(p), 0),
+      ar: ownedProjects.reduce((s, p) => s + Math.max(0, projectAR(p)), 0),
+    };
+  });
+}
+
+/* ---------------------------------------------------------------------- */
 /*  SEED DATA                                                               */
 /* ---------------------------------------------------------------------- */
 
 export function seedCustomers() {
   return [
     { id: "c1", company: "Công ty CP Nội Thất ABC", industry: "Nội thất bán lẻ", tier: "high",
-      accountOwner: "Nguyễn Văn Long (KD)",
+      accountOwnerId: "e1", accountOwnerName: "Nguyễn Văn Long",
       contacts: [
         { id: uid("ct"), name: "Nguyễn Thị Lan Anh", position: "Giám đốc Vận hành", phone: "090 123 4567", isPrimary: true },
         { id: uid("ct"), name: "Trần Bảo Châu", position: "Trưởng phòng Thu mua", phone: "090 111 2222", isPrimary: false },
@@ -261,7 +299,7 @@ export function seedCustomers() {
       overview: "Chuỗi showroom nội thất trung – cao cấp, đang mở rộng thêm 2 showroom tại TP.HCM trong năm nay.",
       advantage: "Khách hàng cũ, đã hợp tác 1 dự án thành công, thiện chí thanh toán tốt." },
     { id: "c2", company: "Công ty TNHH Fintech XYZ", industry: "Công nghệ tài chính", tier: "high",
-      accountOwner: "Phạm Thu Hà (KD)",
+      accountOwnerId: "e2", accountOwnerName: "Phạm Thu Hà",
       contacts: [
         { id: uid("ct"), name: "Trần Minh Khoa", position: "Trưởng phòng Hành chính", phone: "091 234 5678", isPrimary: true },
         { id: uid("ct"), name: "Vũ Ngọc Diệp", position: "CFO", phone: "091 222 3333", isPrimary: false },
@@ -269,7 +307,7 @@ export function seedCustomers() {
       overview: "Startup fintech tăng trưởng nhanh, vừa gọi vốn vòng Series A, có nhu cầu mở thêm văn phòng chi nhánh.",
       advantage: "Ngân sách lớn, ra quyết định nhanh, tiềm năng hợp đồng dài hạn cho các chi nhánh mới." },
     { id: "c3", company: "Sóng Coffee Group", industry: "F&B", tier: "high",
-      accountOwner: "Nguyễn Văn Long (KD)",
+      accountOwnerId: "e1", accountOwnerName: "Nguyễn Văn Long",
       contacts: [
         { id: uid("ct"), name: "Phạm Anh Tuấn", position: "Giám đốc Phát triển", phone: "093 345 6789", isPrimary: true },
         { id: uid("ct"), name: "Ngô Thị Kim", position: "Quản lý Vận hành chuỗi", phone: "093 333 4444", isPrimary: false },
@@ -277,12 +315,12 @@ export function seedCustomers() {
       overview: "Chuỗi cafe đang nhân rộng mô hình, kế hoạch mở 10 chi nhánh trong 18 tháng tới.",
       advantage: "Đơn hàng lặp lại theo chuỗi, thiết kế mẫu có thể tái sử dụng, biên lợi nhuận ổn định." },
     { id: "c4", company: "Sunview Realty", industry: "Bất động sản", tier: "normal",
-      accountOwner: "Lê Gia Bảo (KD)",
+      accountOwnerId: "e3", accountOwnerName: "Lê Gia Bảo",
       contacts: [{ id: uid("ct"), name: "Lê Thị Hồng Nhung", position: "Giám đốc Kinh doanh", phone: "094 456 7890", isPrimary: true }],
       overview: "Chủ đầu tư bất động sản, cần đối tác nội thất căn hộ mẫu cho nhiều dự án song song.",
       advantage: "Khối lượng công việc lớn nhưng cạnh tranh giá cao, cần kiểm soát chi phí chặt." },
     { id: "c5", company: "Biển Đông F&B", industry: "F&B", tier: "normal",
-      accountOwner: "Phạm Thu Hà (KD)",
+      accountOwnerId: "e2", accountOwnerName: "Phạm Thu Hà",
       contacts: [{ id: uid("ct"), name: "Đỗ Văn Hùng", position: "Chủ đầu tư", phone: "090 567 8901", isPrimary: true }],
       overview: "Nhà đầu tư mở chuỗi nhà hàng hải sản cao cấp, đang khảo sát thêm 2 mặt bằng mới.",
       advantage: "Ngân sách tốt, quyết định nhanh vì là chủ đầu tư trực tiếp." },
