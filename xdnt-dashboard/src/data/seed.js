@@ -18,8 +18,13 @@
 /*  CONSTANTS                                                               */
 /* ---------------------------------------------------------------------- */
 
+// TODAY chỉ dùng để "neo" các ngày trong dữ liệu MẪU (seedXxx) cho có mạch
+// truyện hợp lý — KHÔNG dùng TODAY cho bất kỳ hành động thật của người dùng.
+// Mọi hành động thật (qua bước, báo điểm nghẽn, tạo task/dự án mới, ghi nhận
+// doanh thu...) phải dùng todayISO() để lấy đúng ngày thực tế trên máy.
 export const TODAY = "2026-07-01";
-export const CURRENT_YEAR = new Date(TODAY).getFullYear();
+export const todayISO = () => new Date().toISOString().slice(0, 10);
+export const CURRENT_YEAR = new Date().getFullYear();
 export const CODE_PREFIX = "TDDB";
 
 export const ROLES = ["KD", "BP", "BOD"];
@@ -144,7 +149,7 @@ export function makeOpportunity(data) {
     currentStage: 1, status: "open", // open | won | lost
     stages: buildStages(OPP_STAGES),
     bottlenecks: [], lostReason: null, wonProjectCode: null,
-    createdAt: data.createdAt || TODAY,
+    createdAt: data.createdAt || todayISO(),
   };
 }
 
@@ -182,7 +187,7 @@ export function makeProject(code, data) {
     bottlenecks: [],
     revenueEvents: [], // ledger thu/chi tiền: {id, type:"invoice"|"payment", date, amount, note}
     costs: [], // {id, category, budget, actual, note}
-    createdAt: data.createdAt || TODAY,
+    createdAt: data.createdAt || todayISO(),
   };
 }
 export function projectCollected(project) {
@@ -216,13 +221,13 @@ export function makeCost(category, budget, actual, note) {
 export function makeTask(data) {
   return {
     id: uid("task"), title: data.title, projectCode: data.projectCode || null,
-    assignee: data.assignee || "", dueDate: data.dueDate || TODAY,
+    assignee: data.assignee || "", dueDate: data.dueDate || todayISO(),
     status: "open", // open | done
-    note: data.note || "", createdAt: TODAY,
+    note: data.note || "", createdAt: todayISO(),
   };
 }
 export function isTaskOverdue(task) {
-  return task.status === "open" && task.dueDate < TODAY;
+  return task.status === "open" && task.dueDate < todayISO();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -232,7 +237,7 @@ export function isTaskOverdue(task) {
 export function makeWarrantyRecord(project) {
   return {
     id: uid("crm"), projectCode: project.code, projectName: project.name, customerName: project.customerName,
-    transferredAt: TODAY, warrantyMonths: 12, status: "active", notes: [],
+    transferredAt: todayISO(), warrantyMonths: 12, status: "active", notes: [],
   };
 }
 
