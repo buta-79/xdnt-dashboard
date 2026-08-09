@@ -3,9 +3,10 @@ import {
   LayoutDashboard, Target, FolderKanban, Users, ListChecks, ShieldCheck, TrendingUp,
   GitBranch, Plus, X, Check, ChevronRight, ChevronDown, ChevronLeft, AlertTriangle,
   Trash2, Building2, User, Calendar, RotateCcw, PhoneCall, Award, Search, CircleCheck,
-  Circle, Clock, DollarSign, Save, PenLine, UserPlus, Link2, Flag, Wallet,
+  Circle, Clock, DollarSign, Save, PenLine, UserPlus, Link2, Flag, Wallet, Download,
 } from "lucide-react";
 import { storage } from "./lib/storage";
+import { exportMonthlyReport } from "./lib/report";
 import {
   todayISO, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths,
   nextProjectCode, canAdvanceGate, toggleGateCheck, advanceGateStage, sendBackGate,
@@ -13,8 +14,8 @@ import {
   OPP_STAGES, OPP_DECISION_STAGE_ID, makeOpportunity,
   PROJECT_STAGES, PROJECT_FINAL_STAGE_ID, PROJECT_WARRANTY_STAGE_ID, PROJECT_ACCEPTANCE_STAGE_ID, makeProject,
   projectCollected, projectAR, projectStagePct, projectRiskLevel, makeRevenueEvent, makeCost,
-  makeTask, isTaskOverdue, makeWarrantyRecord,
-  seedCustomers, seedOpportunities, seedProjects, seedWarrantyRecords, seedTasks, seedForecast,
+  makeTask, isTaskOverdue, makeWarrantyRecord, makeEmployee, employeeSummary,
+  seedCustomers, seedOpportunities, seedProjects, seedWarrantyRecords, seedTasks, seedForecast, seedEmployees,
 } from "./data/seed";
 // TODAY = ngày neo cho dữ liệu MẪU (chỉ dùng khi hiển thị/seed). Mọi hành
 // động thật của người dùng (qua bước, báo điểm nghẽn, tạo mới, ghi nhận...)
@@ -207,10 +208,69 @@ function StageGateStepper({ stageDefs, flow, currentRole, onToggleGate, onAdvanc
 }
 
 /* ---------------------------------------------------------------------- */
+/*  XUẤT BÁO CÁO EXCEL (.xlsx) — theo tháng/quý/toàn bộ                     */
+/* ---------------------------------------------------------------------- */
+
+function ExportReportPanel({ employees, customers, opportunities, projects, tasks, warrantyRecords }) {
+  const now = new Date();
+  const [periodType, setPeriodType] = useState("month");
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [quarter, setQuarter] = useState(Math.ceil((now.getMonth() + 1) / 3));
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+
+  const doExport = async () => {
+    const period = periodType === "all" ? { type: "all" } : periodType === "month" ? { type: "month", year, month } : { type: "quarter", year, quarter };
+    setExporting(true); setError("");
+    try {
+      await exportMonthlyReport(period, { employees, customers, opportunities, projects, tasks, warrantyRecords });
+    } catch (e) {
+      setError("Không xuất được file Excel — vui lòng thử lại.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">Xuất báo cáo Excel</h3>
+      <p className="pane-sub" style={{ marginBottom: 10 }}>
+        Xuất toàn bộ dữ liệu (doanh thu, dự án, cơ hội, khách hàng, nhân viên, task, bảo hành) ra 1 file .xlsx nhiều sheet để làm báo cáo tháng/quý.
+      </p>
+      <div className="revenue-event-form">
+        <select className="input input-sm" style={{ maxWidth: 130 }} value={periodType} onChange={(e) => setPeriodType(e.target.value)}>
+          <option value="month">Theo tháng</option>
+          <option value="quarter">Theo quý</option>
+          <option value="all">Toàn bộ (lũy kế)</option>
+        </select>
+        {periodType === "month" && (
+          <select className="input input-sm" style={{ maxWidth: 100 }} value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+            {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+          </select>
+        )}
+        {periodType === "quarter" && (
+          <select className="input input-sm" style={{ maxWidth: 100 }} value={quarter} onChange={(e) => setQuarter(Number(e.target.value))}>
+            {[1, 2, 3, 4].map((q) => <option key={q} value={q}>Quý {q}</option>)}
+          </select>
+        )}
+        {periodType !== "all" && (
+          <input type="number" className="input input-sm" style={{ maxWidth: 90 }} value={year} onChange={(e) => setYear(Number(e.target.value) || now.getFullYear())} />
+        )}
+        <button className="btn btn-primary btn-sm" onClick={doExport} disabled={exporting}>
+          <Download size={13} /> {exporting ? "Đang xuất..." : "Xuất file Excel"}
+        </button>
+      </div>
+      {error && <div className="figure-debt" style={{ fontSize: 12, marginTop: 6 }}>{error}</div>}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  MASTER DASHBOARD                                                       */
 /* ---------------------------------------------------------------------- */
 
-function DashboardTab({ opportunities, projects, tasks, warrantyRecords, goToProject, goToOpportunity }) {
+function DashboardTab({ employees, customers, opportunities, projects, tasks, warrantyRecords, goToProject, goToOpportunity, goToEmployees }) {
   const openOpps = opportunities.filter((o) => o.status === "open");
   const wonOpps = opportunities.filter((o) => o.status === "won");
   const lostOpps = opportunities.filter((o) => o.status === "lost");
@@ -236,6 +296,8 @@ function DashboardTab({ opportunities, projects, tasks, warrantyRecords, goToPro
   const closedNoWarrantyAR = projects.filter((p) => p.status === "closed" && projectAR(p) > 0);
   const activeWarranty = warrantyRecords.filter((r) => r.status === "active");
   const pendingAcceptance = projects.filter((p) => p.currentStage === PROJECT_ACCEPTANCE_STAGE_ID && p.status === "active");
+
+  const topEmployees = employeeSummary(employees, customers, opportunities, projects).sort((a, b) => b.collected - a.collected).slice(0, 5);
 
   const attentionRows = [];
   overdueTasks.forEach((t) => attentionRows.push({
@@ -273,6 +335,8 @@ function DashboardTab({ opportunities, projects, tasks, warrantyRecords, goToPro
           <p className="pane-sub">Toàn cảnh doanh nghiệp trong 10–15 giây: Pipeline → Hợp đồng → Doanh thu → Dòng tiền → Rủi ro.</p>
         </div>
       </div>
+
+      <ExportReportPanel employees={employees} customers={customers} opportunities={opportunities} projects={projects} tasks={tasks} warrantyRecords={warrantyRecords} />
 
       <div className="kpi-row">
         <KPICard icon={Target} tone="blue" label="PIPELINE" value={formatCompactVND(pipelineValue)} sub={`${openOpps.length} cơ hội đang theo đuổi`} />
@@ -338,6 +402,32 @@ function DashboardTab({ opportunities, projects, tasks, warrantyRecords, goToPro
             <li><ShieldCheck size={13} /> {activeWarranty.length} hồ sơ bảo hành chưa đóng</li>
           </ul>
         </div>
+      </div>
+
+      <div className="panel">
+        <div className="pd-payment-head">
+          <h3 className="panel-title" style={{ marginBottom: 0 }}>Doanh thu theo Nhân viên phụ trách</h3>
+          <button className="btn btn-ghost btn-sm" onClick={goToEmployees}>Xem tất cả <ChevronRight size={13} /></button>
+        </div>
+        {topEmployees.length === 0 && <div className="empty-note">Chưa có nhân viên nào.</div>}
+        {topEmployees.length > 0 && (
+          <div className="forecast-table-wrap">
+            <table className="forecast-table">
+              <thead><tr><th>Nhân viên</th><th>KH phụ trách</th><th>Công trình</th><th>Doanh thu đã thu</th><th>Công nợ (A/R)</th></tr></thead>
+              <tbody>
+                {topEmployees.map((s) => (
+                  <tr key={s.employee.id} className="attention-row-clickable" onClick={goToEmployees}>
+                    <td>{s.employee.name} <span className="dim">({s.employee.role})</span></td>
+                    <td>{s.customerCount}</td>
+                    <td>{s.projectCount}</td>
+                    <td className="figure-pos">{formatCompactVND(s.collected)}</td>
+                    <td className={s.ar > 0 ? "figure-debt" : ""}>{formatCompactVND(s.ar)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="panel">
@@ -973,8 +1063,43 @@ function WarrantyTab({ warrantyRecords, addWarrantyNote, closeWarrantyRecord, go
 /*  CUSTOMERS TAB                                                           */
 /* ---------------------------------------------------------------------- */
 
-function NewCustomerForm({ onCancel, onCreate }) {
-  const [f, setF] = useState({ company: "", industry: "", accountOwner: "", tier: "normal", overview: "", advantage: "" });
+function OwnerPicker({ employees, value, onChange, onCreateEmployee }) {
+  const [showNew, setShowNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newRole, setNewRole] = useState("KD");
+  const activeEmployees = employees.filter((e) => e.active);
+
+  return (
+    <div>
+      <select className="input" value={value} onChange={(e) => {
+        if (e.target.value === "__new__") { setShowNew(true); return; }
+        onChange(e.target.value);
+      }}>
+        <option value="">-- Chưa gán nhân viên phụ trách --</option>
+        {activeEmployees.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.role})</option>)}
+        <option value="__new__">-- Thêm nhân viên mới --</option>
+      </select>
+      {showNew && (
+        <div className="revenue-event-form" style={{ marginTop: 6 }}>
+          <input className="input input-sm" placeholder="Tên nhân viên" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <select className="input input-sm" style={{ maxWidth: 110 }} value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <button className="btn btn-outline btn-sm" onClick={() => {
+            if (!newName.trim()) return;
+            const emp = onCreateEmployee({ name: newName.trim(), role: newRole });
+            onChange(emp.id);
+            setShowNew(false); setNewName("");
+          }}><Plus size={13} /> Tạo &amp; gán</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowNew(false)}>Hủy</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NewCustomerForm({ employees, onCancel, onCreate, onCreateEmployee }) {
+  const [f, setF] = useState({ company: "", industry: "", accountOwnerId: "", tier: "normal", overview: "", advantage: "" });
   const [contacts, setContacts] = useState([{ id: uid("ct"), name: "", position: "", phone: "", isPrimary: true }]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const updateContact = (id, field, val) => setContacts((prev) => prev.map((c) => c.id === id ? { ...c, [field]: val } : c));
@@ -982,12 +1107,24 @@ function NewCustomerForm({ onCancel, onCreate }) {
   const addContact = () => setContacts((prev) => [...prev, { id: uid("ct"), name: "", position: "", phone: "", isPrimary: false }]);
   const removeContact = (id) => setContacts((prev) => prev.length > 1 ? prev.filter((c) => c.id !== id) : prev);
 
+  const submit = () => {
+    if (!f.company.trim()) return;
+    const owner = employees.find((e) => e.id === f.accountOwnerId);
+    onCreate({
+      company: f.company, industry: f.industry, tier: f.tier, overview: f.overview, advantage: f.advantage,
+      accountOwnerId: owner ? owner.id : null, accountOwnerName: owner ? owner.name : "",
+      contacts,
+    });
+  };
+
   return (
     <div className="inline-form">
       <div className="form-grid">
         <div className="form-row"><label>Doanh nghiệp</label><input className="input" value={f.company} onChange={set("company")} /></div>
         <div className="form-row"><label>Ngành hàng</label><input className="input" value={f.industry} onChange={set("industry")} /></div>
-        <div className="form-row"><label>Người phụ trách (nội bộ)</label><input className="input" value={f.accountOwner} onChange={set("accountOwner")} placeholder="VD: Nguyễn Văn A (KD)" /></div>
+        <div className="form-row"><label>Nhân viên phụ trách</label>
+          <OwnerPicker employees={employees} value={f.accountOwnerId} onChange={(id) => setF({ ...f, accountOwnerId: id })} onCreateEmployee={onCreateEmployee} />
+        </div>
         <div className="form-row"><label>Nhóm tiềm năng</label>
           <select className="input" value={f.tier} onChange={set("tier")}><option value="high">Cao</option><option value="normal">Bình thường</option></select>
         </div>
@@ -1011,7 +1148,7 @@ function NewCustomerForm({ onCancel, onCreate }) {
       <div className="form-row"><label>Đánh giá lợi thế hợp tác</label><textarea className="input" rows={2} value={f.advantage} onChange={set("advantage")} /></div>
       <div className="form-actions">
         <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
-        <button className="btn btn-primary btn-sm" onClick={() => f.company.trim() && onCreate({ ...f, contacts })}><Plus size={14} /> Thêm khách hàng</button>
+        <button className="btn btn-primary btn-sm" onClick={submit}><Plus size={14} /> Thêm khách hàng</button>
       </div>
     </div>
   );
@@ -1027,7 +1164,7 @@ function CustomerCard({ c, onOpen, onToggleTier }) {
       </div>
       <div className="client-contact"><User size={13} /> {primary?.name} <span className="dim">· {primary?.position}</span></div>
       {c.contacts.length > 1 && <div className="client-contact dim">+{c.contacts.length - 1} người liên hệ khác</div>}
-      <div className="client-contact"><ShieldCheck size={13} /> Phụ trách: {c.accountOwner}</div>
+      <div className="client-contact"><ShieldCheck size={13} /> Phụ trách: {c.accountOwnerName || "Chưa gán"}</div>
       <div className="client-block"><div className="client-block-label">Tổng quan &amp; tiềm năng</div><p>{c.overview}</p></div>
       <div className="client-block"><div className="client-block-label">Lợi thế hợp tác</div><p>{c.advantage}</p></div>
       <div className="client-card-foot">
@@ -1038,7 +1175,32 @@ function CustomerCard({ c, onOpen, onToggleTier }) {
   );
 }
 
-function CustomerDetail({ customer, opportunities, projects, onBack, goToProject, goToOpportunity }) {
+function OwnerReassignBox({ customer, employees, onReassign }) {
+  const [editing, setEditing] = useState(false);
+  const [choice, setChoice] = useState(customer.accountOwnerId || "");
+  const currentOwner = employees.find((e) => e.id === customer.accountOwnerId);
+
+  if (!editing) {
+    return (
+      <div className="pane-sub" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span>Phụ trách: {customer.accountOwnerName ? `${customer.accountOwnerName}${currentOwner ? ` (${currentOwner.role})` : ""}` : "Chưa gán"}</span>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setChoice(customer.accountOwnerId || ""); setEditing(true); }}><PenLine size={12} /> Đổi nhân viên</button>
+      </div>
+    );
+  }
+  return (
+    <div className="revenue-event-form" style={{ marginTop: 4 }}>
+      <select className="input input-sm" value={choice} onChange={(e) => setChoice(e.target.value)}>
+        <option value="">-- Chưa gán nhân viên phụ trách --</option>
+        {employees.filter((e) => e.active).map((e) => <option key={e.id} value={e.id}>{e.name} ({e.role})</option>)}
+      </select>
+      <button className="btn btn-primary btn-sm" onClick={() => { onReassign(choice || null); setEditing(false); }}><Save size={13} /> Lưu</button>
+      <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>Hủy</button>
+    </div>
+  );
+}
+
+function CustomerDetail({ customer, employees, opportunities, projects, onBack, goToProject, goToOpportunity, reassignOwner }) {
   const relatedOpps = opportunities.filter((o) => o.customerId === customer.id);
   const relatedProjects = projects.filter((p) => p.customerId === customer.id);
   const activeP = relatedProjects.filter((p) => p.status === "active");
@@ -1053,7 +1215,7 @@ function CustomerDetail({ customer, opportunities, projects, onBack, goToProject
         <div>
           <div className="pd-client"><Building2 size={13} /> {customer.industry}</div>
           <h1>{customer.company}</h1>
-          <p className="pane-sub">Phụ trách: {customer.accountOwner}</p>
+          <OwnerReassignBox customer={customer} employees={employees} onReassign={(empId) => reassignOwner(customer.id, empId)} />
         </div>
         <TierBadge tier={customer.tier} />
       </div>
@@ -1106,7 +1268,7 @@ function CustomerDetail({ customer, opportunities, projects, onBack, goToProject
   );
 }
 
-function CustomersTab({ customers, opportunities, projects, addCustomer, toggleCustomerTier, goToProject, goToOpportunity }) {
+function CustomersTab({ customers, employees, opportunities, projects, addCustomer, addEmployee, reassignOwner, toggleCustomerTier, goToProject, goToOpportunity }) {
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
   const [openCustomerId, setOpenCustomerId] = useState(null);
@@ -1117,7 +1279,8 @@ function CustomersTab({ customers, opportunities, projects, addCustomer, toggleC
 
   const openCustomer = customers.find((c) => c.id === openCustomerId);
   if (openCustomer) {
-    return <CustomerDetail customer={openCustomer} opportunities={opportunities} projects={projects} onBack={() => setOpenCustomerId(null)} goToProject={goToProject} goToOpportunity={goToOpportunity} />;
+    return <CustomerDetail customer={openCustomer} employees={employees} opportunities={opportunities} projects={projects}
+      onBack={() => setOpenCustomerId(null)} goToProject={goToProject} goToOpportunity={goToOpportunity} reassignOwner={reassignOwner} />;
   }
 
   return (
@@ -1127,7 +1290,7 @@ function CustomersTab({ customers, opportunities, projects, addCustomer, toggleC
         <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm khách hàng</button>
       </div>
       <div className="search-row"><Search size={15} /><input className="input input-plain" placeholder="Tìm theo tên doanh nghiệp hoặc người liên hệ..." value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-      {showForm && <NewCustomerForm onCancel={() => setShowForm(false)} onCreate={(c) => { addCustomer(c); setShowForm(false); }} />}
+      {showForm && <NewCustomerForm employees={employees} onCreateEmployee={addEmployee} onCancel={() => setShowForm(false)} onCreate={(c) => { addCustomer(c); setShowForm(false); }} />}
       <div className="client-columns">
         <div className="client-col">
           <div className="client-col-head col-head-high">Tiềm năng Cao ({high.length})</div>
@@ -1144,6 +1307,98 @@ function CustomersTab({ customers, opportunities, projects, addCustomer, toggleC
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  NHÂN VIÊN — quản lý roster + doanh thu/công nợ theo Nhân viên phụ trách */
+/* ---------------------------------------------------------------------- */
+
+function NewEmployeeForm({ onCancel, onCreate }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("KD");
+  return (
+    <div className="inline-form">
+      <div className="form-grid">
+        <div className="form-row"><label>Họ tên</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: Nguyễn Văn A" /></div>
+        <div className="form-row"><label>Vai trò</label>
+          <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}</select>
+        </div>
+      </div>
+      <div className="form-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
+        <button className="btn btn-primary btn-sm" onClick={() => name.trim() && onCreate({ name: name.trim(), role })}><Plus size={14} /> Thêm nhân viên</button>
+      </div>
+    </div>
+  );
+}
+
+function EmployeeRow({ employee, summary, updateEmployee, toggleEmployeeActive }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(employee.name);
+  const [role, setRole] = useState(employee.role);
+
+  return (
+    <div className="panel employee-row">
+      <div className="employee-row-top">
+        {!editing ? (
+          <div className="employee-name-block">
+            <span className="employee-name">{employee.name}</span>
+            <span className="chip chip-tiny">{ROLE_LABELS[employee.role]}</span>
+            {!employee.active && <span className="chip chip-tiny">Đã ngừng hoạt động</span>}
+          </div>
+        ) : (
+          <div className="revenue-event-form" style={{ margin: 0 }}>
+            <input className="input input-sm" value={name} onChange={(e) => setName(e.target.value)} />
+            <select className="input input-sm" style={{ maxWidth: 110 }} value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.map((r) => <option key={r} value={r}>{r}</option>)}</select>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6 }}>
+          {!editing ? (
+            <button className="btn btn-ghost btn-sm" onClick={() => { setName(employee.name); setRole(employee.role); setEditing(true); }}><PenLine size={12} /> Sửa</button>
+          ) : (
+            <button className="btn btn-primary btn-sm" onClick={() => { if (name.trim()) { updateEmployee(employee.id, { name: name.trim(), role }); setEditing(false); } }}><Save size={12} /> Lưu</button>
+          )}
+          <button className="btn btn-ghost btn-sm" onClick={() => toggleEmployeeActive(employee.id)}>{employee.active ? "Ngừng hoạt động" : "Kích hoạt lại"}</button>
+        </div>
+      </div>
+      <div className="pd-payment-figures" style={{ marginTop: 10 }}>
+        <div><span className="dim">Khách hàng phụ trách</span><strong>{summary.customerCount}</strong></div>
+        <div><span className="dim">Công trình</span><strong>{summary.projectCount}</strong></div>
+        <div><span className="dim">Pipeline đang mở</span><strong>{formatCompactVND(summary.pipelineValue)}</strong></div>
+        <div><span className="dim">Giá trị hợp đồng</span><strong>{formatCompactVND(summary.contractValue)}</strong></div>
+        <div><span className="dim">Doanh thu đã thu</span><strong className="figure-pos">{formatCompactVND(summary.collected)}</strong></div>
+        <div><span className="dim">Công nợ (A/R)</span><strong className={summary.ar > 0 ? "figure-debt" : "figure-pos"}>{formatCompactVND(summary.ar)}</strong></div>
+      </div>
+    </div>
+  );
+}
+
+function EmployeesTab({ employees, customers, opportunities, projects, addEmployee, updateEmployee, toggleEmployeeActive }) {
+  const [showForm, setShowForm] = useState(false);
+  const summaries = employeeSummary(employees, customers, opportunities, projects);
+  const totalCollected = summaries.reduce((s, x) => s + x.collected, 0);
+  const sorted = summaries.slice().sort((a, b) => b.collected - a.collected);
+
+  return (
+    <div className="tab-pane">
+      <div className="pane-header">
+        <div><h1>Nhân viên</h1><p className="pane-sub">Danh sách nhân viên phụ trách khách hàng, và doanh thu/công nợ quy về theo từng người.</p></div>
+        <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm nhân viên</button>
+      </div>
+
+      {showForm && <NewEmployeeForm onCancel={() => setShowForm(false)} onCreate={(data) => { addEmployee(data); setShowForm(false); }} />}
+
+      <div className="kpi-row" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+        <KPICard icon={Users} tone="blue" label="Tổng số nhân viên" value={employees.length} sub={`${employees.filter((e) => e.active).length} đang hoạt động`} />
+        <KPICard icon={DollarSign} tone="green" label="Tổng doanh thu quy về nhân viên" value={formatCompactVND(totalCollected)} />
+      </div>
+
+      {sorted.map((s) => (
+        <EmployeeRow key={s.employee.id} employee={s.employee} summary={s} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} />
+      ))}
+      {sorted.length === 0 && <div className="empty-note">Chưa có nhân viên nào.</div>}
     </div>
   );
 }
@@ -1441,19 +1696,21 @@ const NAV = [
   { key: "opportunities", label: "Cơ hội bán hàng", icon: Target },
   { key: "projects", label: "Dự án", icon: FolderKanban },
   { key: "customers", label: "Khách hàng", icon: Users },
+  { key: "employees", label: "Nhân viên", icon: UserPlus },
   { key: "tasks", label: "Nhiệm vụ & Deadline", icon: ListChecks },
   { key: "warranty", label: "CRM CSKH · Bảo hành", icon: PhoneCall },
   { key: "sop", label: "Quy trình SOP", icon: GitBranch },
   { key: "forecast", label: "Sales Forecast", icon: TrendingUp },
 ];
 
-const STORAGE_KEY = "xdnt-dashboard-state-v3";
+const STORAGE_KEY = "xdnt-dashboard-state-v4";
 
 export default function App() {
   const initialCustomers = seedCustomers();
   const initialProjects = seedProjects(initialCustomers);
 
   const [tab, setTab] = useState("dashboard");
+  const [employees, setEmployees] = useState(seedEmployees);
   const [customers, setCustomers] = useState(initialCustomers);
   const [opportunities, setOpportunities] = useState(() => seedOpportunities(initialCustomers));
   const [projects, setProjects] = useState(initialProjects);
@@ -1473,6 +1730,7 @@ export default function App() {
         const res = await storage.get(STORAGE_KEY);
         if (res && res.value) {
           const data = JSON.parse(res.value);
+          if (data.employees) setEmployees(data.employees);
           if (data.customers) setCustomers(data.customers);
           if (data.opportunities) setOpportunities(data.opportunities);
           if (data.projects) setProjects(data.projects);
@@ -1488,11 +1746,11 @@ export default function App() {
     if (!loaded) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      try { await storage.set(STORAGE_KEY, JSON.stringify({ customers, opportunities, projects, warrantyRecords, tasks, forecast })); }
+      try { await storage.set(STORAGE_KEY, JSON.stringify({ employees, customers, opportunities, projects, warrantyRecords, tasks, forecast })); }
       catch (e) { /* ignore */ }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [customers, opportunities, projects, warrantyRecords, tasks, forecast, loaded]);
+  }, [employees, customers, opportunities, projects, warrantyRecords, tasks, forecast, loaded]);
 
   /* ---- helper: advance 1 bước + tự resolve điểm nghẽn nếu vừa xử lý xong bước bị trả về ---- */
   const advanceFlow = (flow, stageDefs, role) => {
@@ -1590,10 +1848,31 @@ export default function App() {
   /* ---- customer actions ---- */
   const addCustomer = useCallback((c) => setCustomers((prev) => [...prev, { id: uid("c"), ...c }]), []);
   const toggleCustomerTier = useCallback((id) => setCustomers((prev) => prev.map((c) => c.id === id ? { ...c, tier: c.tier === "high" ? "normal" : "high" } : c)), []);
+  const reassignOwner = useCallback((customerId, employeeId) => {
+    setCustomers((prev) => prev.map((c) => {
+      if (c.id !== customerId) return c;
+      if (!employeeId) return { ...c, accountOwnerId: null, accountOwnerName: "" };
+      const emp = employees.find((e) => e.id === employeeId);
+      return { ...c, accountOwnerId: employeeId, accountOwnerName: emp ? emp.name : c.accountOwnerName };
+    }));
+  }, [employees]);
+
+  /* ---- employee (nhân viên phụ trách) actions ---- */
+  const addEmployee = useCallback((data) => {
+    const emp = makeEmployee(data);
+    setEmployees((prev) => [...prev, emp]);
+    return emp;
+  }, []);
+  const updateEmployee = useCallback((id, patch) => {
+    setEmployees((prev) => prev.map((e) => e.id === id ? { ...e, ...patch } : e));
+    if (patch.name) setCustomers((prev) => prev.map((c) => c.accountOwnerId === id ? { ...c, accountOwnerName: patch.name } : c));
+  }, []);
+  const toggleEmployeeActive = useCallback((id) => setEmployees((prev) => prev.map((e) => e.id === id ? { ...e, active: !e.active } : e)), []);
 
   /* ---- navigation ---- */
   const goToProject = useCallback((code) => { setSelectedProjectCode(code); setTab("projects"); }, []);
   const goToOpportunity = useCallback((id) => { setSelectedOpportunityId(id); setTab("opportunities"); }, []);
+  const goToEmployees = useCallback(() => setTab("employees"), []);
 
   return (
     <div className="xdnt-app">
@@ -1623,7 +1902,8 @@ export default function App() {
 
       <main className="main">
         {tab === "dashboard" && (
-          <DashboardTab opportunities={opportunities} projects={projects} tasks={tasks} warrantyRecords={warrantyRecords} goToProject={goToProject} goToOpportunity={goToOpportunity} />
+          <DashboardTab employees={employees} customers={customers} opportunities={opportunities} projects={projects} tasks={tasks}
+            warrantyRecords={warrantyRecords} goToProject={goToProject} goToOpportunity={goToOpportunity} goToEmployees={goToEmployees} />
         )}
         {tab === "opportunities" && (
           <OpportunitiesTab opportunities={opportunities} customers={customers} currentRole={currentRole}
@@ -1638,8 +1918,13 @@ export default function App() {
             sendBackProject={sendBackProject} addRevenueEvent={addRevenueEvent} addCost={addCost} />
         )}
         {tab === "customers" && (
-          <CustomersTab customers={customers} opportunities={opportunities} projects={projects}
-            addCustomer={addCustomer} toggleCustomerTier={toggleCustomerTier} goToProject={goToProject} goToOpportunity={goToOpportunity} />
+          <CustomersTab customers={customers} employees={employees} opportunities={opportunities} projects={projects}
+            addCustomer={addCustomer} addEmployee={addEmployee} reassignOwner={reassignOwner}
+            toggleCustomerTier={toggleCustomerTier} goToProject={goToProject} goToOpportunity={goToOpportunity} />
+        )}
+        {tab === "employees" && (
+          <EmployeesTab employees={employees} customers={customers} opportunities={opportunities} projects={projects}
+            addEmployee={addEmployee} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} />
         )}
         {tab === "tasks" && <TasksTab tasks={tasks} projects={projects} addTask={addTask} toggleTaskDone={toggleTaskDone} removeTask={removeTask} goToProject={goToProject} />}
         {tab === "warranty" && <WarrantyTab warrantyRecords={warrantyRecords} addWarrantyNote={addWarrantyNote} closeWarrantyRecord={closeWarrantyRecord} goToProject={goToProject} />}
