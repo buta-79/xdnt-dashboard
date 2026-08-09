@@ -4,14 +4,15 @@ import {
   ChevronRight, ChevronDown, ChevronLeft, AlertTriangle, Trash2, Building2, User,
   Calendar, RotateCcw, PhoneCall, Award, Search, CircleCheck, Circle, Clock,
   DollarSign, Save, PenLine, Paperclip, Lock, Unlock, Download, FileText, Flag,
-  UserPlus, Link2, ShieldCheck
+  UserPlus, Link2, ShieldCheck, ListChecks
 } from "lucide-react";
 import { storage } from "./lib/storage";
 import {
   TODAY, STAGES, ROLES, ROLE_LABELS, PIPELINE_STAGES, MONTHS,
-  BOTTLENECK_THRESHOLD, MAX_ATTACHMENT_BYTES, uid, formatVND, formatCompactVND,
+  DECISION_STAGE_ID, HANDOFF_STAGE_ID, FINAL_STAGE_ID, SOP_FUNNEL_STEPS, SOP_BOTTLENECK_CONVERSION,
+  BOTTLENECK_THRESHOLD, MAX_ATTACHMENT_BYTES, uid, formatVND, formatCompactVND, addMonths,
   makeRound, getCurrentRound, getRevisionCount, stageRevisionNote,
-  seedProjects, seedClients, seedPipeline, seedForecast,
+  seedProjects, seedClients, seedPipeline, seedForecast, seedCrmCskh, seedSopManual,
 } from "./data/seed";
 
 
@@ -216,9 +217,6 @@ function AttachmentBox({ stage, canUpload, canManage, isBOD, onUpload, onRemove,
 }
 
 function StageStepper({ project, round, isHistorical, currentRole, onAdvance, onApprove, onReject, onCompleteProject, onUpload, onRemove, onToggleUnlock }) {
-  const [kickoffDate, setKickoffDate] = useState(() => {
-    const d = new Date(TODAY); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10);
-  });
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
 
@@ -238,7 +236,7 @@ function StageStepper({ project, round, isHistorical, currentRole, onAdvance, on
           <div className={`step ${isDone ? "step-done" : isRejected ? "step-rejected" : isCurrent ? "step-current" : "step-future"}`} key={s.id}>
             <div className="step-marker">
               {isDone ? <CircleCheck size={20} /> : isRejected ? <X size={20} /> : <Circle size={20} />}
-              {s.id !== 5 && <div className="step-connector" />}
+              {s.id !== FINAL_STAGE_ID && <div className="step-connector" />}
             </div>
             <div className="step-content">
               <div className="step-head">
@@ -255,11 +253,14 @@ function StageStepper({ project, round, isHistorical, currentRole, onAdvance, on
               {isRejected && (
                 <div className="step-meta step-meta-rejected">KH chưa đồng ý ngày {stage.completedAt} — đã mở tiến trình điều chỉnh mới.</div>
               )}
+              {s.id === HANDOFF_STAGE_ID && isDone && (
+                <div className="step-meta step-meta-handoff"><ShieldCheck size={12} /> Đã chốt nghiệm thu — hồ sơ dự án đã được chuyển sang CRM CSKH để theo dõi bảo hành.</div>
+              )}
 
               <AttachmentBox stage={stage} canUpload={canUpload} canManage={canUpload} isBOD={!isHistorical && isBOD}
                 onUpload={(f) => onUpload(s.id, f)} onRemove={(id) => onRemove(s.id, id)} onToggleUnlock={() => onToggleUnlock(s.id)} />
 
-              {isCurrent && s.id !== 5 && project.status === "active" && !isHistorical && (
+              {isCurrent && s.id !== DECISION_STAGE_ID && project.status === "active" && !isHistorical && (
                 canAct ? (
                   <button className="btn btn-primary btn-sm" onClick={() => onAdvance()}><Check size={14} /> Bấm hoàn thành</button>
                 ) : (
@@ -267,13 +268,12 @@ function StageStepper({ project, round, isHistorical, currentRole, onAdvance, on
                 )
               )}
 
-              {s.id === 5 && isCurrent && round.stageStatus === "waiting_decision" && project.status === "active" && !isHistorical && (
+              {s.id === DECISION_STAGE_ID && isCurrent && project.status === "active" && !isHistorical && (
                 canAct ? (
                   <div className="decision-box">
-                    <div className="decision-label">Khách hàng phản hồi về dự toán:</div>
+                    <div className="decision-label">Khách hàng phản hồi về báo giá:</div>
                     <div className="decision-row">
-                      <input type="date" className="input input-sm" value={kickoffDate} onChange={(e) => setKickoffDate(e.target.value)} />
-                      <button className="btn btn-primary btn-sm" onClick={() => onApprove(kickoffDate)}><Check size={14} /> Đồng ý — Lên lịch Kick-off</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => onApprove()}><Check size={14} /> Đồng ý — Chuyển sang Ký hợp đồng</button>
                     </div>
                     {!showRejectForm ? (
                       <button className="btn btn-ghost btn-sm" onClick={() => setShowRejectForm(true)}><RotateCcw size={14} /> Chưa đồng ý — mở tiến trình điều chỉnh mới</button>
@@ -293,13 +293,11 @@ function StageStepper({ project, round, isHistorical, currentRole, onAdvance, on
                 ) : <div className="perm-note">Chỉ {ROLE_LABELS[s.who]} hoặc BOD được ghi nhận phản hồi KH ở bước này.</div>
               )}
 
-              {s.id === 5 && round.stageStatus === "kickoff_scheduled" && (
+              {s.id === FINAL_STAGE_ID && isDone && project.status === "active" && !isHistorical && (
                 <div className="kickoff-box">
-                  <Calendar size={14} />
-                  <span>Kick-off triển khai: <strong>{round.kickoffDate}</strong></span>
-                  {project.status === "active" && !isHistorical && (
-                    <button className="btn btn-outline btn-sm" onClick={onCompleteProject}>Đánh dấu hoàn tất dự án</button>
-                  )}
+                  <ShieldCheck size={14} />
+                  <span>Đã hoàn tất giai đoạn bảo hành.</span>
+                  <button className="btn btn-outline btn-sm" onClick={onCompleteProject}>Đánh dấu hoàn tất dự án</button>
                 </div>
               )}
             </div>
@@ -352,7 +350,47 @@ function RoundHistory({ project, currentRole }) {
   );
 }
 
-function ProjectDetail({ project, currentRole, updateProject, advanceStage, approveStage, rejectStage, completeProject, uploadAttachment, removeAttachment, toggleUnlockStage }) {
+function RevenueEventForm({ onAdd }) {
+  const [date, setDate] = useState(TODAY);
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const submit = () => {
+    const n = Number(amount) || 0;
+    if (n <= 0) return;
+    onAdd(date, n, note.trim() || "Ghi nhận doanh thu");
+    setAmount(""); setNote("");
+  };
+  return (
+    <div className="revenue-event-form">
+      <input type="date" className="input input-sm" value={date} onChange={(e) => setDate(e.target.value)} />
+      <NumberInput className="input input-sm" value={amount} onChange={setAmount} placeholder="Số tiền (₫)" />
+      <input className="input input-sm" placeholder="Ghi chú (VD: tạm ứng, thanh toán đợt 2...)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <button className="btn btn-outline btn-sm" onClick={submit}><Plus size={13} /> Ghi nhận</button>
+    </div>
+  );
+}
+
+function RevenueTimeline({ project, onAddEvent }) {
+  const events = project.revenueEvents || [];
+  return (
+    <div className="panel-sub panel" style={{ marginTop: 12 }}>
+      <h4 style={{ marginBottom: 10 }}>Lịch sử phát sinh doanh thu</h4>
+      {events.length === 0 && <div className="empty-note">Chưa ghi nhận thời điểm phát sinh doanh thu nào.</div>}
+      <div className="attach-list">
+        {events.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).map((ev) => (
+          <div className="revenue-event-item" key={ev.id}>
+            <Calendar size={12} /> <span className="dim">{ev.date}</span>
+            <strong>{formatVND(ev.amount)}</strong>
+            <span className="dim">{ev.note}</span>
+          </div>
+        ))}
+      </div>
+      <RevenueEventForm onAdd={(date, amount, note) => onAddEvent(project.id, amount, date, note)} />
+    </div>
+  );
+}
+
+function ProjectDetail({ project, currentRole, updateProject, advanceStage, approveStage, rejectStage, completeProject, uploadAttachment, removeAttachment, toggleUnlockStage, addRevenueEvent }) {
   const [editingPayment, setEditingPayment] = useState(false);
   const [collected, setCollected] = useState(project.paymentCollected);
   useEffect(() => setCollected(project.paymentCollected), [project.id, project.paymentCollected]);
@@ -404,14 +442,16 @@ function ProjectDetail({ project, currentRole, updateProject, advanceStage, appr
         </div>
       </div>
 
+      <RevenueTimeline project={project} onAddEvent={addRevenueEvent} />
+
       <RoundHistory project={project} currentRole={currentRole} />
 
       <div className="pd-stages">
         <h4>Tiến độ triển khai {project.rounds.length > 1 && <span className="round-inline-tag">Vòng {project.rounds.length} (hiện tại)</span>}</h4>
         <StageStepper project={project} round={round} isHistorical={false} currentRole={currentRole}
-          onAdvance={() => advanceStage(project.id, currentRole)}
-          onApprove={(date) => approveStage(project.id, date, currentRole)}
-          onReject={(reason) => rejectStage(project.id, reason, currentRole)}
+          onAdvance={() => advanceStage(project.id)}
+          onApprove={() => approveStage(project.id)}
+          onReject={(reason) => rejectStage(project.id, reason)}
           onCompleteProject={() => completeProject(project.id)}
           onUpload={(stageId, file) => handleUpload(stageId, file)}
           onRemove={(stageId, attId) => removeAttachment(project.id, stageId, attId)}
@@ -442,7 +482,7 @@ function NewProjectForm({ onCancel, onCreate, clients }) {
   );
 }
 
-function ProjectsTab({ projects, clients, currentRole, selectedId, setSelectedId, updateProject, advanceStage, approveStage, rejectStage, completeProject, createProject, uploadAttachment, removeAttachment, toggleUnlockStage }) {
+function ProjectsTab({ projects, clients, currentRole, selectedId, setSelectedId, updateProject, advanceStage, approveStage, rejectStage, completeProject, createProject, uploadAttachment, removeAttachment, toggleUnlockStage, addRevenueEvent }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("all");
   const filtered = projects.filter((p) => filter === "all" ? true : p.status === filter);
@@ -477,7 +517,7 @@ function ProjectsTab({ projects, clients, currentRole, selectedId, setSelectedId
                   </div>
                   <div className="project-card-client">{p.client}</div>
                   <div className="project-card-stage">
-                    Bước {round.currentStage}/5 · {STAGES.find((s) => s.id === round.currentStage)?.label}
+                    Bước {round.currentStage}/{FINAL_STAGE_ID} · {STAGES.find((s) => s.id === round.currentStage)?.label}
                     {p.rounds.length > 1 && <span className="round-inline-tag">Vòng {p.rounds.length}</span>}
                   </div>
                   <ProgressBar pct={rate} tone={rate >= 80 ? "green" : rate >= 40 ? "amber" : "red"} />
@@ -491,7 +531,8 @@ function ProjectsTab({ projects, clients, currentRole, selectedId, setSelectedId
           {selected ? (
             <ProjectDetail project={selected} currentRole={currentRole} updateProject={updateProject}
               advanceStage={advanceStage} approveStage={approveStage} rejectStage={rejectStage} completeProject={completeProject}
-              uploadAttachment={uploadAttachment} removeAttachment={removeAttachment} toggleUnlockStage={toggleUnlockStage} />
+              uploadAttachment={uploadAttachment} removeAttachment={removeAttachment} toggleUnlockStage={toggleUnlockStage}
+              addRevenueEvent={addRevenueEvent} />
           ) : <div className="empty-note">Chọn một dự án để xem chi tiết.</div>}
         </div>
       </div>
@@ -616,7 +657,7 @@ function ClientDetail({ client, projects, pipeline, onBack, goToProject }) {
         {activeP.length === 0 && <div className="empty-note">Chưa có công trình nào đang triển khai.</div>}
         {activeP.map((p) => (
           <div className="cd-project-item" key={p.id} onClick={() => goToProject(p.id)}>
-            <span>{p.name}</span><span className="dim">Bước {getCurrentRound(p).currentStage}/5</span><ChevronRight size={15} />
+            <span>{p.name}</span><span className="dim">Bước {getCurrentRound(p).currentStage}/{FINAL_STAGE_ID}</span><ChevronRight size={15} />
           </div>
         ))}
       </div>
@@ -940,6 +981,239 @@ function ForecastTab({ forecast, setForecast }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  CRM CSKH TAB — hồ sơ bảo hành, tự động nhận từ bước Nghiệm thu          */
+/* ---------------------------------------------------------------------- */
+
+function CskhNoteForm({ onAdd }) {
+  const [text, setText] = useState("");
+  const submit = () => { if (text.trim()) { onAdd(text.trim()); setText(""); } };
+  return (
+    <div className="cskh-note-form">
+      <input className="input input-sm" placeholder="Ghi chú chăm sóc / phản hồi bảo hành..." value={text} onChange={(e) => setText(e.target.value)} />
+      <button className="btn btn-outline btn-sm" onClick={submit}><Plus size={13} /> Ghi chú</button>
+    </div>
+  );
+}
+
+function CrmCskhTab({ crmCskh, addCskhNote, closeCskhRecord, goToProject }) {
+  const [filter, setFilter] = useState("all");
+  const filtered = crmCskh.filter((r) => (filter === "all" ? true : r.status === filter));
+  const activeCount = crmCskh.filter((r) => r.status === "active").length;
+
+  return (
+    <div className="tab-pane">
+      <div className="pane-header">
+        <div>
+          <h1>CRM CSKH · Theo dõi bảo hành</h1>
+          <p className="pane-sub">Dự án tự động chuyển vào đây ngay khi chốt bước Nghiệm thu, để chăm sóc khách hàng trong giai đoạn Bảo hành.</p>
+        </div>
+      </div>
+
+      <div className="kpi-row" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+        <KPICard icon={ShieldCheck} tone="blue" label="Đang trong bảo hành" value={activeCount} />
+        <KPICard icon={CircleCheck} tone="green" label="Đã hoàn tất bảo hành" value={crmCskh.length - activeCount} />
+      </div>
+
+      <div className="filter-tabs">
+        {[["all", "Tất cả"], ["active", "Đang bảo hành"], ["completed", "Đã hoàn tất"]].map(([k, l]) => (
+          <button key={k} className={`chip ${filter === k ? "chip-active" : ""}`} onClick={() => setFilter(k)}>{l}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div className="empty-note">Chưa có dự án nào trong CRM CSKH.</div>}
+
+      {filtered.map((r) => {
+        const warrantyEnd = addMonths(r.transferredAt, r.warrantyMonths);
+        return (
+          <div className="panel" key={r.id}>
+            <div className="cskh-head">
+              <div>
+                <div className="pd-client"><Building2 size={13} /> {r.client}</div>
+                <h3 style={{ margin: "2px 0" }}>{r.projectName}</h3>
+              </div>
+              <span className={`status-pill status-${r.status === "active" ? "active" : "completed"}`}>
+                {r.status === "active" ? "Đang bảo hành" : "Đã hoàn tất"}
+              </span>
+            </div>
+            <div className="cskh-meta">
+              <span><Calendar size={13} /> Chuyển giao: {r.transferredAt}</span>
+              <span><ShieldCheck size={13} /> Hạn bảo hành: {r.warrantyMonths} tháng (đến {warrantyEnd})</span>
+              <button className="btn btn-ghost btn-sm" onClick={() => goToProject(r.projectId)}>Xem dự án <ChevronRight size={13} /></button>
+              {r.status === "active" && (
+                <button className="btn btn-outline btn-sm" onClick={() => closeCskhRecord(r.id)}>Đóng hồ sơ bảo hành</button>
+              )}
+            </div>
+            <div className="cskh-notes">
+              <div className="attach-head-label" style={{ marginBottom: 6 }}><PhoneCall size={12} /> Ghi chú chăm sóc</div>
+              {r.notes.length === 0 && <div className="attach-empty">Chưa có ghi chú nào.</div>}
+              {r.notes.map((n) => (
+                <div className="cskh-note-item" key={n.id}><span className="dim">{n.date}</span> — {n.text}</div>
+              ))}
+              <CskhNoteForm onAdd={(text) => addCskhNote(r.id, text)} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  SOP TAB — sơ đồ quy trình tổng, danh mục KH & công nợ theo công trình   */
+/* ---------------------------------------------------------------------- */
+
+function computeSopSteps(projects, clients, pipeline, crmCskh, sopManual) {
+  const reached = (macroId) => projects.filter((p) => {
+    if (p.status === "completed") return true;
+    return getCurrentRound(p).currentStage >= macroId;
+  }).length;
+  const autoCounts = {
+    leads: pipeline.length,
+    crm: clients.length,
+    sales_process: pipeline.filter((i) => i.stage !== "leads").length,
+    quote: reached(3),
+    contract: reached(4),
+    construction: reached(5),
+    acceptance: reached(6),
+    warranty: crmCskh.length,
+  };
+  return SOP_FUNNEL_STEPS.map((s) => ({
+    ...s,
+    count: s.source === "manual" ? Number(sopManual[s.key]) || 0 : autoCounts[s.key] || 0,
+  }));
+}
+
+function SopFunnel({ steps, sopManual, setSopManual }) {
+  const maxCount = Math.max(1, ...steps.map((s) => s.count));
+  const withConversion = steps.map((s, idx) => {
+    const prev = idx === 0 ? null : steps[idx - 1];
+    const conv = prev && prev.count > 0 ? (s.count / prev.count) * 100 : null;
+    return { ...s, conv };
+  });
+  const bottlenecks = withConversion.filter((s) => s.conv !== null && s.conv < SOP_BOTTLENECK_CONVERSION);
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">Sơ đồ quy trình SOP — từ Marketing đến KH quay lại</h3>
+      <p className="pane-sub" style={{ marginBottom: 12 }}>
+        Số có nền chấm là số nhập tay (chưa có nguồn dữ liệu kết nối trong app) — các số còn lại tính tự động từ Dự án/Khách hàng/Pipeline.
+        % là tỉ lệ chuyển đổi so với chặng trước; chặng dưới {SOP_BOTTLENECK_CONVERSION}% được đánh dấu là điểm nghẽn.
+      </p>
+      <div className="sop-funnel">
+        {withConversion.map((s) => (
+          <div className={`sop-funnel-row ${s.conv !== null && s.conv < SOP_BOTTLENECK_CONVERSION ? "sop-funnel-row-bottleneck" : ""}`} key={s.key}>
+            <div className="sop-funnel-label">{s.label}</div>
+            <div className="funnel-track sop-funnel-track"><div className="funnel-fill" style={{ width: `${(s.count / maxCount) * 100}%` }} /></div>
+            <div className="sop-funnel-count">
+              {s.source === "manual" ? (
+                <NumberInput className="input input-sm sop-manual-input" value={sopManual[s.key]} onChange={(v) => setSopManual((prev) => ({ ...prev, [s.key]: v }))} />
+              ) : <span>{s.count}</span>}
+            </div>
+            <div className="sop-funnel-conv">
+              {s.conv !== null ? (
+                <span className={s.conv < SOP_BOTTLENECK_CONVERSION ? "sop-bottleneck-tag" : "dim"}>{s.conv.toFixed(0)}%</span>
+              ) : <span className="dim">—</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {bottlenecks.length > 0 && (
+        <div className="sop-bottleneck-summary">
+          <AlertTriangle size={14} />
+          <span>Điểm nghẽn cần chú ý: {bottlenecks.map((b) => b.label).join(", ")} — tỉ lệ chuyển đổi từ chặng trước đang dưới {SOP_BOTTLENECK_CONVERSION}%.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SopClientRow({ client, projects, goToProject }) {
+  const [open, setOpen] = useState(false);
+  const [openProjectId, setOpenProjectId] = useState(null);
+  const related = projects.filter((p) => p.client === client.company);
+  const totalRevenue = related.reduce((s, p) => s + p.paymentCollected, 0);
+  const totalDebt = related.reduce((s, p) => s + (p.paymentTotal - p.paymentCollected), 0);
+
+  return (
+    <div className="panel industry-panel">
+      <button className="industry-row-head" onClick={() => setOpen((v) => !v)}>
+        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        <span className="industry-name">{client.company}</span>
+        <span className="dim">{related.length} công trình</span>
+        <span className="industry-figures">Doanh thu {formatCompactVND(totalRevenue)} · Công nợ {formatCompactVND(totalDebt)}</span>
+      </button>
+      {open && (
+        <div className="industry-body">
+          {related.length === 0 && <div className="empty-note">Chưa có công trình nào.</div>}
+          {related.map((p) => {
+            const debt = p.paymentTotal - p.paymentCollected;
+            const isOpenP = openProjectId === p.id;
+            return (
+              <div key={p.id} className="sop-project-block">
+                <div className="cd-project-item" onClick={() => setOpenProjectId(isOpenP ? null : p.id)}>
+                  {isOpenP ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  <span>{p.name}</span>
+                  <span className="dim">{formatCompactVND(p.paymentCollected)} / {formatCompactVND(p.paymentTotal)}</span>
+                  <span className={debt > 0 ? "figure-debt" : "figure-pos"}>{debt > 0 ? `Còn nợ ${formatCompactVND(debt)}` : "Đã thu đủ"}</span>
+                </div>
+                {isOpenP && (
+                  <div className="sop-project-detail">
+                    <div className="sop-project-detail-head">
+                      <span className={`status-pill status-${p.status}`}>{p.status === "active" ? "Đang triển khai" : "Hoàn thành"}</span>
+                      <button className="btn btn-ghost btn-sm" onClick={() => goToProject(p.id)}>Xem trong Dự án <ChevronRight size={13} /></button>
+                    </div>
+                    <div className="attach-head-label" style={{ margin: "8px 0 4px" }}>Thời điểm phát sinh doanh thu</div>
+                    {(p.revenueEvents || []).length === 0 && <div className="empty-note" style={{ padding: "4px 0" }}>Chưa có ghi nhận doanh thu.</div>}
+                    <div className="attach-list">
+                      {(p.revenueEvents || []).slice().sort((a, b) => (a.date < b.date ? 1 : -1)).map((ev) => (
+                        <div className="revenue-event-item" key={ev.id}>
+                          <Calendar size={12} /> <span className="dim">{ev.date}</span><strong>{formatVND(ev.amount)}</strong><span className="dim">{ev.note}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SopTab({ projects, clients, pipeline, crmCskh, sopManual, setSopManual, goToProject }) {
+  const steps = computeSopSteps(projects, clients, pipeline, crmCskh, sopManual);
+  const totalRevenue = projects.reduce((s, p) => s + p.paymentCollected, 0);
+  const totalDebt = projects.reduce((s, p) => s + (p.paymentTotal - p.paymentCollected), 0);
+
+  return (
+    <div className="tab-pane">
+      <div className="pane-header">
+        <div>
+          <h1>Quy trình SOP</h1>
+          <p className="pane-sub">Đánh giá tiềm năng và điểm nghẽn theo từng chặng của quy trình, cùng danh mục khách hàng và công nợ theo công trình.</p>
+        </div>
+      </div>
+
+      <SopFunnel steps={steps} sopManual={sopManual} setSopManual={setSopManual} />
+
+      <div className="panel">
+        <h3 className="panel-title">Danh mục khách hàng</h3>
+        <p className="pane-sub" style={{ marginBottom: 10 }}>Tổng công trình triển khai và doanh thu từng công trình — bấm vào một khách hàng, rồi vào từng công trình để xem chi tiết.</p>
+        <div className="kpi-row" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 14 }}>
+          <KPICard icon={DollarSign} tone="green" label="Tổng doanh thu đã thu" value={formatCompactVND(totalRevenue)} />
+          <KPICard icon={AlertTriangle} tone="amber" label="Tổng công nợ còn lại" value={formatCompactVND(totalDebt)} />
+        </div>
+      </div>
+
+      {clients.map((c) => <SopClientRow key={c.id} client={c} projects={projects} goToProject={goToProject} />)}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /*  APP SHELL                                                              */
 /* ---------------------------------------------------------------------- */
 
@@ -948,6 +1222,8 @@ const NAV = [
   { key: "projects", label: "Dự án", icon: FolderKanban },
   { key: "clients", label: "Khách hàng", icon: Users },
   { key: "pipeline", label: "Pipeline", icon: GitBranch },
+  { key: "cskh", label: "CRM CSKH", icon: PhoneCall },
+  { key: "sop", label: "Quy trình SOP", icon: ListChecks },
   { key: "forecast", label: "Sales Forecast", icon: TrendingUp },
 ];
 
@@ -959,6 +1235,8 @@ export default function App() {
   const [clients, setClients] = useState(seedClients);
   const [pipeline, setPipeline] = useState(seedPipeline);
   const [forecast, setForecast] = useState(seedForecast);
+  const [crmCskh, setCrmCskh] = useState(seedCrmCskh);
+  const [sopManual, setSopManual] = useState(seedSopManual);
   const [selectedProjectId, setSelectedProjectId] = useState("p1");
   const [currentRole, setCurrentRole] = useState("BOD");
   const [loaded, setLoaded] = useState(false);
@@ -974,6 +1252,8 @@ export default function App() {
           if (data.clients) setClients(data.clients);
           if (data.pipeline) setPipeline(data.pipeline);
           if (data.forecast) setForecast(data.forecast);
+          if (data.crmCskh) setCrmCskh(data.crmCskh);
+          if (data.sopManual) setSopManual(data.sopManual);
         }
       } catch (e) { /* no saved state yet */ } finally { setLoaded(true); }
     })();
@@ -983,11 +1263,11 @@ export default function App() {
     if (!loaded) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      try { await storage.set(STORAGE_KEY, JSON.stringify({ projects, clients, pipeline, forecast })); }
+      try { await storage.set(STORAGE_KEY, JSON.stringify({ projects, clients, pipeline, forecast, crmCskh, sopManual })); }
       catch (e) { /* ignore */ }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [projects, clients, pipeline, forecast, loaded]);
+  }, [projects, clients, pipeline, forecast, crmCskh, sopManual, loaded]);
 
   /* ---- project actions ---- */
   const updateProject = useCallback((id, patch) => setProjects((prev) => prev.map((p) => p.id === id ? { ...p, ...patch } : p)), []);
@@ -1000,25 +1280,31 @@ export default function App() {
   };
 
   const advanceStage = useCallback((id) => {
+    let crmToAdd = null;
     setProjects((prev) => prev.map((p) => {
       if (p.id !== id) return p;
       const rounds = patchLastRound(p.rounds, (round) => {
         const stageId = round.currentStage;
         round.stages[stageId] = { ...round.stages[stageId], state: "done", completedAt: TODAY, completedBy: currentRole };
-        if (stageId < 4) { round.currentStage = stageId + 1; round.daysInStage = 0; }
-        else if (stageId === 4) { round.currentStage = 5; round.daysInStage = 0; round.stageStatus = "waiting_decision"; }
+        if (stageId < FINAL_STAGE_ID) {
+          if (stageId === HANDOFF_STAGE_ID) {
+            crmToAdd = { id: uid("crm"), projectId: p.id, projectName: p.name, client: p.client, transferredAt: TODAY, warrantyMonths: 12, status: "active", notes: [] };
+          }
+          round.currentStage = stageId + 1; round.daysInStage = 0;
+        }
         return round;
       });
       return { ...p, rounds };
     }));
+    if (crmToAdd) setCrmCskh((prev) => (prev.some((r) => r.projectId === crmToAdd.projectId) ? prev : [...prev, crmToAdd]));
   }, [currentRole]);
 
-  const approveStage = useCallback((id, kickoffDate) => {
+  const approveStage = useCallback((id) => {
     setProjects((prev) => prev.map((p) => {
       if (p.id !== id) return p;
       const rounds = patchLastRound(p.rounds, (round) => {
-        round.stages[5] = { ...round.stages[5], state: "done", completedAt: TODAY, completedBy: currentRole };
-        round.stageStatus = "kickoff_scheduled"; round.kickoffDate = kickoffDate; round.outcome = "approved"; round.daysInStage = 0;
+        round.stages[DECISION_STAGE_ID] = { ...round.stages[DECISION_STAGE_ID], state: "done", completedAt: TODAY, completedBy: currentRole };
+        round.outcome = "approved"; round.currentStage = DECISION_STAGE_ID + 1; round.daysInStage = 0;
         return round;
       });
       return { ...p, rounds };
@@ -1029,7 +1315,7 @@ export default function App() {
     setProjects((prev) => prev.map((p) => {
       if (p.id !== id) return p;
       const rounds = patchLastRound(p.rounds, (round) => {
-        round.stages[5] = { ...round.stages[5], state: "rejected", completedAt: TODAY, completedBy: currentRole };
+        round.stages[DECISION_STAGE_ID] = { ...round.stages[DECISION_STAGE_ID], state: "rejected", completedAt: TODAY, completedBy: currentRole };
         round.outcome = "rejected"; round.stageStatus = "rejected";
         return round;
       });
@@ -1042,9 +1328,21 @@ export default function App() {
 
   const createProject = useCallback((data) => {
     const id = uid("p");
-    setProjects((prev) => [...prev, { id, name: data.name, client: data.client, scope: data.scope, status: "active", paymentTotal: data.paymentTotal, paymentCollected: 0, rounds: [makeRound(1)] }]);
+    setProjects((prev) => [...prev, { id, name: data.name, client: data.client, scope: data.scope, status: "active", paymentTotal: data.paymentTotal, paymentCollected: 0, revenueEvents: [], rounds: [makeRound(1)] }]);
     setSelectedProjectId(id);
   }, []);
+
+  const addRevenueEvent = useCallback((id, amount, date, note) => {
+    setProjects((prev) => prev.map((p) => p.id === id
+      ? { ...p, paymentCollected: p.paymentCollected + amount, revenueEvents: [...(p.revenueEvents || []), { id: uid("rev"), date, amount, note }] }
+      : p));
+  }, []);
+
+  /* ---- CRM CSKH actions ---- */
+  const addCskhNote = useCallback((recordId, text) => {
+    setCrmCskh((prev) => prev.map((r) => r.id === recordId ? { ...r, notes: [...r.notes, { id: uid("nt"), date: TODAY, text }] } : r));
+  }, []);
+  const closeCskhRecord = useCallback((recordId) => setCrmCskh((prev) => prev.map((r) => r.id === recordId ? { ...r, status: "completed" } : r)), []);
 
   const uploadAttachment = useCallback((id, stageId, meta) => {
     setProjects((prev) => prev.map((p) => {
@@ -1126,10 +1424,13 @@ export default function App() {
         {tab === "projects" && (
           <ProjectsTab projects={projects} clients={clients} currentRole={currentRole} selectedId={selectedProjectId} setSelectedId={setSelectedProjectId}
             updateProject={updateProject} advanceStage={advanceStage} approveStage={approveStage} rejectStage={rejectStage} completeProject={completeProject}
-            createProject={createProject} uploadAttachment={uploadAttachment} removeAttachment={removeAttachment} toggleUnlockStage={toggleUnlockStage} />
+            createProject={createProject} uploadAttachment={uploadAttachment} removeAttachment={removeAttachment} toggleUnlockStage={toggleUnlockStage}
+            addRevenueEvent={addRevenueEvent} />
         )}
         {tab === "clients" && <ClientsTab clients={clients} addClient={addClient} toggleClientTier={toggleClientTier} projects={projects} pipeline={pipeline} goToProject={goToProject} />}
         {tab === "pipeline" && <PipelineTab pipeline={pipeline} clients={clients} movePipelineItem={movePipelineItem} addLead={addLead} removeLead={removeLead} togglePriority={togglePriority} />}
+        {tab === "cskh" && <CrmCskhTab crmCskh={crmCskh} addCskhNote={addCskhNote} closeCskhRecord={closeCskhRecord} goToProject={goToProject} />}
+        {tab === "sop" && <SopTab projects={projects} clients={clients} pipeline={pipeline} crmCskh={crmCskh} sopManual={sopManual} setSopManual={setSopManual} goToProject={goToProject} />}
         {tab === "forecast" && <ForecastTab forecast={forecast} setForecast={setForecast} />}
       </main>
     </div>
