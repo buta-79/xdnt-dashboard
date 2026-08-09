@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { storage } from "./lib/storage";
 import {
-  TODAY, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths,
+  todayISO, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths,
   nextProjectCode, canAdvanceGate, toggleGateCheck, advanceGateStage, sendBackGate,
   hasOpenBottleneck, resolveLastBottleneck,
   OPP_STAGES, OPP_DECISION_STAGE_ID, makeOpportunity,
@@ -16,6 +16,9 @@ import {
   makeTask, isTaskOverdue, makeWarrantyRecord,
   seedCustomers, seedOpportunities, seedProjects, seedWarrantyRecords, seedTasks, seedForecast,
 } from "./data/seed";
+// TODAY = ngày neo cho dữ liệu MẪU (chỉ dùng khi hiển thị/seed). Mọi hành
+// động thật của người dùng (qua bước, báo điểm nghẽn, tạo mới, ghi nhận...)
+// phải dùng todayISO() để lấy đúng ngày thực tế trên máy — xem seed.js.
 
 /* ---------------------------------------------------------------------- */
 /*  SMALL UI PRIMITIVES                                                     */
@@ -226,7 +229,7 @@ function DashboardTab({ opportunities, projects, tasks, warrantyRecords, goToPro
   const totalActualCost = projects.reduce((s, p) => s + (p.costs || []).reduce((cs, c) => cs + c.actual, 0), 0);
   const grossProfit = contractValue - totalActualCost;
 
-  const newLeads30d = openOpps.filter((o) => o.createdAt >= addMonths(TODAY, -1)).length;
+  const newLeads30d = openOpps.filter((o) => o.createdAt >= addMonths(todayISO(), -1)).length;
   const topOpps = openOpps.slice().sort((a, b) => b.value - a.value).slice(0, 4);
   const nearDecision = openOpps.filter((o) => o.currentStage >= OPP_STAGES.length - 1);
 
@@ -612,7 +615,7 @@ function CostPanel({ project, onAddCost }) {
 
 function RevenueLedger({ project, onAddEvent }) {
   const [type, setType] = useState("payment");
-  const [date, setDate] = useState(TODAY);
+  const [date, setDate] = useState(todayISO());
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const events = project.revenueEvents || [];
@@ -817,7 +820,7 @@ function NewTaskForm({ projects, onCancel, onCreate }) {
   const [title, setTitle] = useState("");
   const [projectCode, setProjectCode] = useState("");
   const [assignee, setAssignee] = useState("");
-  const [dueDate, setDueDate] = useState(TODAY);
+  const [dueDate, setDueDate] = useState(todayISO());
   const [note, setNote] = useState("");
   const submit = () => { if (!title.trim()) return; onCreate({ title: title.trim(), projectCode: projectCode || null, assignee: assignee.trim(), dueDate, note: note.trim() }); };
   return (
@@ -1494,9 +1497,10 @@ export default function App() {
   /* ---- helper: advance 1 bước + tự resolve điểm nghẽn nếu vừa xử lý xong bước bị trả về ---- */
   const advanceFlow = (flow, stageDefs, role) => {
     const stageIdBefore = flow.currentStage;
-    let updated = advanceGateStage(flow, stageDefs, role, TODAY);
+    const now = todayISO();
+    let updated = advanceGateStage(flow, stageDefs, role, now);
     const openBn = (updated.bottlenecks || []).find((b) => !b.resolvedAt);
-    if (openBn && stageIdBefore === openBn.stageId - 1) updated = resolveLastBottleneck(updated, TODAY);
+    if (openBn && stageIdBefore === openBn.stageId - 1) updated = resolveLastBottleneck(updated, now);
     return updated;
   };
 
@@ -1504,17 +1508,18 @@ export default function App() {
   const addOpportunity = useCallback((data) => setOpportunities((prev) => [...prev, makeOpportunity(data)]), []);
   const toggleOppGate = useCallback((id, stageId, idx) => setOpportunities((prev) => prev.map((o) => o.id === id ? toggleGateCheck(o, stageId, idx) : o)), []);
   const advanceOpportunity = useCallback((id) => setOpportunities((prev) => prev.map((o) => o.id === id ? advanceFlow(o, OPP_STAGES, currentRole) : o)), [currentRole]);
-  const sendBackOpportunity = useCallback((id, reason) => setOpportunities((prev) => prev.map((o) => o.id === id ? sendBackGate(o, reason, currentRole, TODAY) : o)), [currentRole]);
+  const sendBackOpportunity = useCallback((id, reason) => setOpportunities((prev) => prev.map((o) => o.id === id ? sendBackGate(o, reason, currentRole, todayISO()) : o)), [currentRole]);
 
   const markWon = useCallback((id) => {
+    const now = todayISO();
     setProjects((prevProjects) => {
       const opp = opportunities.find((o) => o.id === id);
       if (!opp) return prevProjects;
       const code = nextProjectCode(prevProjects);
-      const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: opp.value, createdAt: TODAY });
+      const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: opp.value, createdAt: now });
       setOpportunities((prevOpp) => prevOpp.map((o) => o.id === id ? {
         ...o, status: "won", wonProjectCode: code,
-        stages: { ...o.stages, [OPP_DECISION_STAGE_ID]: { ...o.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: TODAY, completedBy: currentRole } },
+        stages: { ...o.stages, [OPP_DECISION_STAGE_ID]: { ...o.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: now, completedBy: currentRole } },
       } : o));
       setSelectedProjectCode(code);
       setTab("projects");
@@ -1523,9 +1528,10 @@ export default function App() {
   }, [opportunities, currentRole]);
 
   const markLost = useCallback((id, reason) => {
+    const now = todayISO();
     setOpportunities((prev) => prev.map((o) => o.id === id ? {
       ...o, status: "lost", lostReason: reason,
-      stages: { ...o.stages, [OPP_DECISION_STAGE_ID]: { ...o.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: TODAY, completedBy: currentRole } },
+      stages: { ...o.stages, [OPP_DECISION_STAGE_ID]: { ...o.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: now, completedBy: currentRole } },
     } : o));
   }, [currentRole]);
 
@@ -1544,7 +1550,7 @@ export default function App() {
     }));
   }, [currentRole]);
 
-  const sendBackProject = useCallback((id, reason) => setProjects((prev) => prev.map((p) => p.id === id ? sendBackGate(p, reason, currentRole, TODAY) : p)), [currentRole]);
+  const sendBackProject = useCallback((id, reason) => setProjects((prev) => prev.map((p) => p.id === id ? sendBackGate(p, reason, currentRole, todayISO()) : p)), [currentRole]);
 
   const createProject = useCallback((data) => {
     setProjects((prev) => {
@@ -1568,12 +1574,12 @@ export default function App() {
     if (!loaded) return;
     const missing = projects.filter((p) => p.currentStage >= PROJECT_WARRANTY_STAGE_ID && !warrantyRecords.some((r) => r.projectCode === p.code));
     if (missing.length) {
-      setWarrantyRecords((prev) => [...prev, ...missing.map((p) => ({ ...makeWarrantyRecord(p), transferredAt: p.stages[PROJECT_ACCEPTANCE_STAGE_ID]?.completedAt || TODAY }))]);
+      setWarrantyRecords((prev) => [...prev, ...missing.map((p) => ({ ...makeWarrantyRecord(p), transferredAt: p.stages[PROJECT_ACCEPTANCE_STAGE_ID]?.completedAt || todayISO() }))]);
     }
   }, [projects, warrantyRecords, loaded]);
 
   /* ---- warranty actions ---- */
-  const addWarrantyNote = useCallback((recordId, text) => setWarrantyRecords((prev) => prev.map((r) => r.id === recordId ? { ...r, notes: [...r.notes, { id: uid("nt"), date: TODAY, text }] } : r)), []);
+  const addWarrantyNote = useCallback((recordId, text) => setWarrantyRecords((prev) => prev.map((r) => r.id === recordId ? { ...r, notes: [...r.notes, { id: uid("nt"), date: todayISO(), text }] } : r)), []);
   const closeWarrantyRecord = useCallback((recordId) => setWarrantyRecords((prev) => prev.map((r) => r.id === recordId ? { ...r, status: "completed" } : r)), []);
 
   /* ---- task actions ---- */
