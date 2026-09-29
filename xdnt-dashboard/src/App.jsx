@@ -991,8 +991,42 @@ function NewTaskForm({ projects, onCancel, onCreate }) {
   );
 }
 
-function TasksTab({ tasks, projects, addTask, toggleTaskDone, removeTask, goToProject, isBOD }) {
+function EditTaskForm({ task, projects, onCancel, onSave }) {
+  const [title, setTitle] = useState(task.title);
+  const [projectCode, setProjectCode] = useState(task.projectCode || "");
+  const [assignee, setAssignee] = useState(task.assignee || "");
+  const [dueDate, setDueDate] = useState(task.dueDate || todayISO());
+  const [note, setNote] = useState(task.note || "");
+  const submit = () => { if (title.trim()) onSave({ title: title.trim(), projectCode: projectCode || null, assignee: assignee.trim(), dueDate, note: note.trim() }); };
+  return (
+    <tr className="revenue-event-form-row">
+      <td colSpan={6}>
+        <div className="inline-form" style={{ margin: 0 }}>
+          <div className="form-grid">
+            <div className="form-row"><label>Việc cần làm</label><input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></div>
+            <div className="form-row"><label>Dự án liên quan</label>
+              <select className="input" value={projectCode} onChange={(e) => setProjectCode(e.target.value)}>
+                <option value="">-- Không gắn dự án --</option>
+                {projects.map((p) => <option key={p.code} value={p.code}>{p.code} · {p.name}</option>)}
+              </select>
+            </div>
+            <div className="form-row"><label>Người chịu trách nhiệm</label><input className="input" value={assignee} onChange={(e) => setAssignee(e.target.value)} /></div>
+            <div className="form-row"><label>Deadline</label><input type="date" className="input" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></div>
+          </div>
+          <div className="form-row"><label>Ghi chú</label><textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></div>
+          <div className="form-actions">
+            <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
+            <button className="btn btn-primary btn-sm" onClick={submit}><Check size={14} /> Lưu điều chỉnh</button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function TasksTab({ tasks, projects, addTask, toggleTaskDone, removeTask, updateTask, goToProject, isBOD }) {
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [filter, setFilter] = useState("open");
   const overdue = tasks.filter(isTaskOverdue);
   const filtered = tasks.filter((t) => filter === "all" ? true : filter === "overdue" ? isTaskOverdue(t) : t.status === filter);
@@ -1026,14 +1060,22 @@ function TasksTab({ tasks, projects, addTask, toggleTaskDone, removeTask, goToPr
               <thead><tr><th></th><th>Việc cần làm</th><th>Dự án</th><th>Người chịu trách nhiệm</th><th>Deadline</th><th></th></tr></thead>
               <tbody>
                 {filtered.map((t) => (
+                  editingId === t.id ? (
+                    <EditTaskForm key={t.id} task={t} projects={projects} onCancel={() => setEditingId(null)}
+                      onSave={(patch) => { updateTask(t.id, patch); setEditingId(null); }} />
+                  ) : (
                   <tr key={t.id} className={isTaskOverdue(t) ? "task-row-overdue" : ""}>
                     <td><button className="icon-btn" onClick={() => toggleTaskDone(t.id)}>{t.status === "done" ? <CircleCheck size={16} className="figure-pos" /> : <Circle size={16} />}</button></td>
                     <td>{t.title}{t.note && <div className="dim" style={{ fontSize: 11 }}>{t.note}</div>}</td>
                     <td>{t.projectCode ? <button className="btn btn-ghost btn-sm" onClick={() => goToProject(t.projectCode)}>{t.projectCode}</button> : "—"}</td>
                     <td>{t.assignee || "—"}</td>
                     <td className={isTaskOverdue(t) ? "figure-debt" : ""}>{t.dueDate}</td>
-                    <td>{isBOD && <button className="icon-btn" onClick={() => removeTask(t.id)}><Trash2 size={13} /></button>}</td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      <button className="icon-btn" onClick={() => setEditingId(t.id)}><PenLine size={13} /></button>
+                      {isBOD && <button className="icon-btn" onClick={() => removeTask(t.id)}><Trash2 size={13} /></button>}
+                    </td>
                   </tr>
+                  )
                 ))}
               </tbody>
             </table>
@@ -2145,6 +2187,13 @@ export default function App() {
     if (t) saveDoc("tasks", id, { ...t, status: t.status === "open" ? "done" : "open" }).catch(onWriteError);
   }, [tasks]);
   const removeTask = useCallback((id) => removeDoc("tasks", id).catch(onWriteError), []);
+  // Điều chỉnh nội dung 1 task đã tạo (tên việc, dự án gắn, người chịu trách
+  // nhiệm, deadline, ghi chú) — mở cho cả BOD lẫn STAFF, giống quyền tạo task
+  // mới; chỉ riêng xoá task mới giới hạn BOD (nút Trash2 ở TasksTab).
+  const updateTask = useCallback((id, patch) => {
+    const t = tasks.find((x) => x.id === id);
+    if (t) saveDoc("tasks", id, { ...t, ...patch }).catch(onWriteError);
+  }, [tasks]);
 
   /* ---- customer actions ---- */
   const addCustomer = useCallback((c) => {
@@ -2292,7 +2341,7 @@ export default function App() {
             addEmployee={addEmployee} updateEmployee={updateEmployee} toggleEmployeeActive={toggleEmployeeActive} isBOD={isBOD}
             bodUsers={bodUsers} addBodAccount={addBodAccount} />
         )}
-        {tab === "tasks" && <TasksTab tasks={tasks} projects={projects} addTask={addTask} toggleTaskDone={toggleTaskDone} removeTask={removeTask} goToProject={goToProject} isBOD={isBOD} />}
+        {tab === "tasks" && <TasksTab tasks={tasks} projects={projects} addTask={addTask} toggleTaskDone={toggleTaskDone} removeTask={removeTask} updateTask={updateTask} goToProject={goToProject} isBOD={isBOD} />}
         {tab === "warranty" && <WarrantyTab warrantyRecords={warrantyRecords} addWarrantyNote={addWarrantyNote} closeWarrantyRecord={closeWarrantyRecord} goToProject={goToProject} isBOD={isBOD} />}
         {tab === "sop" && <SopTab opportunities={opportunities} projects={projects} customers={customers} goToProject={goToProject} goToOpportunity={goToOpportunity} />}
         {tab === "forecast" && <ForecastTab forecast={forecast} addForecastRow={addForecastRow} updateForecastCell={updateForecastCell} removeForecastRow={removeForecastRow} />}
