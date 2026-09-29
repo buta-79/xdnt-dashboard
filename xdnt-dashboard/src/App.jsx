@@ -762,13 +762,13 @@ function CostPanel({ project, onAddCost, onUpdateCost, isBOD }) {
                 return (
                   <tr key={c.id}>
                     <td>{c.category}{c.note && <div className="dim" style={{ fontSize: 11 }}>{c.note}</div>}</td>
-                    <td>{formatCompactVND(c.budget)}</td><td>{formatCompactVND(c.actual)}</td>
-                    <td className={diff >= 0 ? "figure-pos" : "figure-debt"}>{formatCompactVND(diff)}</td>
+                    <td>{formatVND(c.budget)}</td><td>{formatVND(c.actual)}</td>
+                    <td className={diff >= 0 ? "figure-pos" : "figure-debt"}>{formatVND(diff)}</td>
                     {isBOD && <td><button className="btn btn-ghost btn-sm" onClick={() => setEditingId(c.id)}><PenLine size={12} /> Điều chỉnh</button></td>}
                   </tr>
                 );
               })}
-              <tr><td><strong>Tổng</strong></td><td><strong>{formatCompactVND(totalBudget)}</strong></td><td><strong>{formatCompactVND(totalActual)}</strong></td><td className={totalBudget - totalActual >= 0 ? "figure-pos" : "figure-debt"}><strong>{formatCompactVND(totalBudget - totalActual)}</strong></td>{isBOD && <td></td>}</tr>
+              <tr><td><strong>Tổng</strong></td><td><strong>{formatVND(totalBudget)}</strong></td><td><strong>{formatVND(totalActual)}</strong></td><td className={totalBudget - totalActual >= 0 ? "figure-pos" : "figure-debt"}><strong>{formatVND(totalBudget - totalActual)}</strong></td>{isBOD && <td></td>}</tr>
             </tbody>
           </table>
         </div>
