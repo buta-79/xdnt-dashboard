@@ -10,7 +10,10 @@ import { onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut } 
 import { doc, onSnapshot as onDocSnapshot } from "firebase/firestore";
 import { auth, db, createStaffAuthAccount } from "./lib/firebase";
 import { subscribeCollection, saveDoc, removeDoc, explainWriteError } from "./lib/db";
-import { exportMonthlyReport } from "./lib/report";
+import {
+  exportMonthlyReport, exportCustomersReport, exportOpportunitiesReport,
+  exportProjectsReport, exportEmployeesReport, exportSopReport,
+} from "./lib/report";
 import {
   todayISO, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths,
   nextProjectCode, canAdvanceGate, toggleGateCheck, advanceGateStage, sendBackGate,
@@ -272,6 +275,27 @@ function ExportReportPanel({ employees, customers, opportunities, projects, task
         </button>
       </div>
       {error && <div className="figure-debt" style={{ fontSize: 12, marginTop: 6 }}>{error}</div>}
+    </div>
+  );
+}
+
+/** Nút "Xuất Excel" gọn, dùng ngay trên từng trang (Cơ hội/Dự án/Khách hàng/
+ * Nhân viên/Quy trình SOP) — chỉ xuất đúng phạm vi dữ liệu trang đó, khác với
+ * ExportReportPanel ở Master Dashboard (gộp toàn bộ dữ liệu theo kỳ tháng/quý). */
+function QuickExportButton({ label, onExport }) {
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+  const run = async () => {
+    setExporting(true); setError("");
+    try { await onExport(); } catch (e) { setError("Không xuất được file Excel — vui lòng thử lại."); }
+    finally { setExporting(false); }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+      <button className="btn btn-outline btn-sm" onClick={run} disabled={exporting}>
+        <Download size={13} /> {exporting ? "Đang xuất..." : (label || "Xuất Excel")}
+      </button>
+      {error && <div className="figure-debt" style={{ fontSize: 11 }}>{error}</div>}
     </div>
   );
 }
@@ -587,7 +611,10 @@ function OpportunitiesTab({ opportunities, customers, currentRole, selectedId, s
     <div className="tab-pane">
       <div className="pane-header">
         <div><h1>Cơ hội bán hàng</h1><p className="pane-sub">Sales Stage-Gate: LEAD → Tiếp cận → Xác định nhu cầu → Khảo sát → Concept → Báo giá → Đàm phán → WON/LOST.</p></div>
-        <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm cơ hội</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <QuickExportButton label="Xuất Excel Cơ hội" onExport={() => exportOpportunitiesReport(opportunities)} />
+          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm cơ hội</button>
+        </div>
       </div>
 
       {showForm && <NewOpportunityForm customers={customers} onCancel={() => setShowForm(false)} onCreate={(data) => { addOpportunity(data); setShowForm(false); }} />}
@@ -917,7 +944,10 @@ function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelect
     <div className="tab-pane">
       <div className="pane-header">
         <div><h1>Dự án triển khai</h1><p className="pane-sub">Delivery Stage-Gate: Kick-off → Thiết kế → Duyệt bản vẽ → BOQ → Procurement → Manufacturing → Construction → QC → Nghiệm thu → Bàn giao → Quyết toán → Thu tiền → Warranty → CLOSED.</p></div>
-        <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Tạo dự án mới</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <QuickExportButton label="Xuất Excel Dự án" onExport={() => exportProjectsReport(projects)} />
+          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Tạo dự án mới</button>
+        </div>
       </div>
 
       {showForm && <NewProjectForm customers={customers} onCancel={() => setShowForm(false)} onCreate={(data) => { createProject(data); setShowForm(false); }} />}
@@ -1181,7 +1211,7 @@ function OwnerPicker({ employees, value, onChange }) {
 }
 
 function NewCustomerForm({ employees, onCancel, onCreate }) {
-  const [f, setF] = useState({ company: "", industry: "", accountOwnerId: "", tier: "normal", overview: "", advantage: "" });
+  const [f, setF] = useState({ company: "", brandName: "", branchName: "", industry: "", accountOwnerId: "", tier: "normal", overview: "", advantage: "" });
   const [contacts, setContacts] = useState([{ id: uid("ct"), name: "", position: "", phone: "", isPrimary: true }]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const updateContact = (id, field, val) => setContacts((prev) => prev.map((c) => c.id === id ? { ...c, [field]: val } : c));
@@ -1193,7 +1223,8 @@ function NewCustomerForm({ employees, onCancel, onCreate }) {
     if (!f.company.trim()) return;
     const owner = employees.find((e) => e.id === f.accountOwnerId);
     onCreate({
-      company: f.company, industry: f.industry, tier: f.tier, overview: f.overview, advantage: f.advantage,
+      company: f.company, brandName: f.brandName.trim(), branchName: f.branchName.trim(),
+      industry: f.industry, tier: f.tier, overview: f.overview, advantage: f.advantage,
       accountOwnerId: owner ? owner.id : null, accountOwnerName: owner ? owner.name : "",
       contacts,
     });
@@ -1202,7 +1233,9 @@ function NewCustomerForm({ employees, onCancel, onCreate }) {
   return (
     <div className="inline-form">
       <div className="form-grid">
-        <div className="form-row"><label>Doanh nghiệp</label><input className="input" value={f.company} onChange={set("company")} /></div>
+        <div className="form-row"><label>Tên Doanh nghiệp</label><input className="input" value={f.company} onChange={set("company")} /></div>
+        <div className="form-row"><label>Tên Thương hiệu</label><input className="input" value={f.brandName} onChange={set("brandName")} placeholder="(nếu khác tên doanh nghiệp)" /></div>
+        <div className="form-row"><label>Tên Chi nhánh/Cửa hàng</label><input className="input" value={f.branchName} onChange={set("branchName")} placeholder="(nếu có nhiều chi nhánh)" /></div>
         <div className="form-row"><label>Ngành hàng</label><input className="input" value={f.industry} onChange={set("industry")} /></div>
         <div className="form-row"><label>Nhân viên phụ trách</label>
           <OwnerPicker employees={employees} value={f.accountOwnerId} onChange={(id) => setF({ ...f, accountOwnerId: id })} />
@@ -1242,7 +1275,15 @@ function CustomerCard({ c, onOpen, onToggleTier, isBOD }) {
     <div className="client-card" onClick={() => onOpen(c.id)}>
       <div className="client-card-top">
         <div className="client-avatar"><Building2 size={18} /></div>
-        <div><div className="client-company">{c.company}</div><div className="client-industry">{c.industry}</div></div>
+        <div>
+          <div className="client-company">{c.company}</div>
+          {(c.brandName || c.branchName) && (
+            <div className="dim" style={{ fontSize: 12 }}>
+              {c.brandName && <>Thương hiệu: {c.brandName}</>}{c.brandName && c.branchName && " · "}{c.branchName && <>Chi nhánh: {c.branchName}</>}
+            </div>
+          )}
+          <div className="client-industry">{c.industry}</div>
+        </div>
       </div>
       <div className="client-contact"><User size={13} /> {primary?.name} <span className="dim">· {primary?.position}</span></div>
       {c.contacts.length > 1 && <div className="client-contact dim">+{c.contacts.length - 1} người liên hệ khác</div>}
@@ -1282,13 +1323,56 @@ function OwnerReassignBox({ customer, employees, onReassign, isBOD }) {
   );
 }
 
-function CustomerDetail({ customer, employees, opportunities, projects, onBack, goToProject, goToOpportunity, reassignOwner, isBOD }) {
+function EditCustomerInfoForm({ customer, onCancel, onSave }) {
+  const [company, setCompany] = useState(customer.company);
+  const [brandName, setBrandName] = useState(customer.brandName || "");
+  const [branchName, setBranchName] = useState(customer.branchName || "");
+  const [industry, setIndustry] = useState(customer.industry || "");
+  const [overview, setOverview] = useState(customer.overview || "");
+  const [advantage, setAdvantage] = useState(customer.advantage || "");
+
+  const submit = () => {
+    if (!company.trim()) return;
+    onSave({ company: company.trim(), brandName: brandName.trim(), branchName: branchName.trim(), industry: industry.trim(), overview: overview.trim(), advantage: advantage.trim() });
+  };
+
+  return (
+    <div className="inline-form" style={{ marginBottom: 16 }}>
+      <div className="form-grid">
+        <div className="form-row"><label>Tên Doanh nghiệp</label><input className="input" value={company} onChange={(e) => setCompany(e.target.value)} /></div>
+        <div className="form-row"><label>Tên Thương hiệu</label><input className="input" value={brandName} onChange={(e) => setBrandName(e.target.value)} placeholder="(nếu khác tên doanh nghiệp)" /></div>
+        <div className="form-row"><label>Tên Chi nhánh/Cửa hàng</label><input className="input" value={branchName} onChange={(e) => setBranchName(e.target.value)} placeholder="(nếu có nhiều chi nhánh)" /></div>
+        <div className="form-row"><label>Ngành hàng</label><input className="input" value={industry} onChange={(e) => setIndustry(e.target.value)} /></div>
+      </div>
+      <div className="form-row"><label>Tổng quan doanh nghiệp &amp; tiềm năng phát triển</label><textarea className="input" rows={2} value={overview} onChange={(e) => setOverview(e.target.value)} /></div>
+      <div className="form-row"><label>Đánh giá lợi thế hợp tác</label><textarea className="input" rows={2} value={advantage} onChange={(e) => setAdvantage(e.target.value)} /></div>
+      <div className="form-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
+        <button className="btn btn-primary btn-sm" onClick={submit}><Save size={14} /> Lưu thông tin</button>
+      </div>
+    </div>
+  );
+}
+
+function CustomerDetail({ customer, employees, opportunities, projects, onBack, goToProject, goToOpportunity, reassignOwner, updateCustomer, isBOD }) {
+  const [editingInfo, setEditingInfo] = useState(false);
   const relatedOpps = opportunities.filter((o) => o.customerId === customer.id);
   const relatedProjects = projects.filter((p) => p.customerId === customer.id);
   const activeP = relatedProjects.filter((p) => p.status === "active");
   const closedP = relatedProjects.filter((p) => p.status === "closed");
   const totalRevenue = relatedProjects.reduce((s, p) => s + projectCollected(p), 0);
   const totalAR = relatedProjects.reduce((s, p) => s + Math.max(0, projectAR(p)), 0);
+
+  if (editingInfo && isBOD) {
+    return (
+      <div className="tab-pane">
+        <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginBottom: 12 }}><ChevronLeft size={14} /> Quay lại danh sách khách hàng</button>
+        <div className="pane-header"><div><h1>Sửa thông tin khách hàng</h1></div></div>
+        <EditCustomerInfoForm customer={customer} onCancel={() => setEditingInfo(false)}
+          onSave={(patch) => { updateCustomer(customer.id, patch); setEditingInfo(false); }} />
+      </div>
+    );
+  }
 
   return (
     <div className="tab-pane">
@@ -1297,9 +1381,17 @@ function CustomerDetail({ customer, employees, opportunities, projects, onBack, 
         <div>
           <div className="pd-client"><Building2 size={13} /> {customer.industry}</div>
           <h1>{customer.company}</h1>
+          {(customer.brandName || customer.branchName) && (
+            <div className="dim" style={{ fontSize: 13, marginTop: 2 }}>
+              {customer.brandName && <>Thương hiệu: {customer.brandName}</>}{customer.brandName && customer.branchName && " · "}{customer.branchName && <>Chi nhánh/Cửa hàng: {customer.branchName}</>}
+            </div>
+          )}
           <OwnerReassignBox customer={customer} employees={employees} onReassign={(empId) => reassignOwner(customer.id, empId)} isBOD={isBOD} />
         </div>
-        <TierBadge tier={customer.tier} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isBOD && <button className="btn btn-ghost btn-sm" onClick={() => setEditingInfo(true)}><PenLine size={13} /> Sửa thông tin</button>}
+          <TierBadge tier={customer.tier} />
+        </div>
       </div>
 
       <div className="kpi-row" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
@@ -1350,28 +1442,37 @@ function CustomerDetail({ customer, employees, opportunities, projects, onBack, 
   );
 }
 
-function CustomersTab({ customers, employees, opportunities, projects, addCustomer, reassignOwner, toggleCustomerTier, goToProject, goToOpportunity, isBOD }) {
+function CustomersTab({ customers, employees, opportunities, projects, addCustomer, updateCustomer, reassignOwner, toggleCustomerTier, goToProject, goToOpportunity, isBOD }) {
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
   const [openCustomerId, setOpenCustomerId] = useState(null);
 
-  const filtered = customers.filter((c) => c.company.toLowerCase().includes(query.toLowerCase()) || c.contacts.some((ct) => ct.name.toLowerCase().includes(query.toLowerCase())));
+  const q = query.toLowerCase();
+  const filtered = customers.filter((c) =>
+    c.company.toLowerCase().includes(q) ||
+    (c.brandName || "").toLowerCase().includes(q) ||
+    (c.branchName || "").toLowerCase().includes(q) ||
+    c.contacts.some((ct) => ct.name.toLowerCase().includes(q)));
   const high = filtered.filter((c) => c.tier === "high");
   const normal = filtered.filter((c) => c.tier === "normal");
 
   const openCustomer = customers.find((c) => c.id === openCustomerId);
   if (openCustomer) {
     return <CustomerDetail customer={openCustomer} employees={employees} opportunities={opportunities} projects={projects}
-      onBack={() => setOpenCustomerId(null)} goToProject={goToProject} goToOpportunity={goToOpportunity} reassignOwner={reassignOwner} isBOD={isBOD} />;
+      onBack={() => setOpenCustomerId(null)} goToProject={goToProject} goToOpportunity={goToOpportunity}
+      reassignOwner={reassignOwner} updateCustomer={updateCustomer} isBOD={isBOD} />;
   }
 
   return (
     <div className="tab-pane">
       <div className="pane-header">
         <div><h1>Khách hàng</h1><p className="pane-sub">Chân dung doanh nghiệp — mọi cơ hội &amp; công trình liên kết qua Mã khách hàng (customerId).</p></div>
-        <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm khách hàng</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <QuickExportButton label="Xuất Excel Khách hàng" onExport={() => exportCustomersReport(customers, projects, opportunities)} />
+          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm khách hàng</button>
+        </div>
       </div>
-      <div className="search-row"><Search size={15} /><input className="input input-plain" placeholder="Tìm theo tên doanh nghiệp hoặc người liên hệ..." value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+      <div className="search-row"><Search size={15} /><input className="input input-plain" placeholder="Tìm theo tên doanh nghiệp, thương hiệu, chi nhánh hoặc người liên hệ..." value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {showForm && <NewCustomerForm employees={employees} onCancel={() => setShowForm(false)} onCreate={(c) => { addCustomer(c); setShowForm(false); }} />}
       <div className="client-columns">
         <div className="client-col">
@@ -1546,7 +1647,10 @@ function EmployeesTab({ employees, customers, opportunities, projects, addEmploy
     <div className="tab-pane">
       <div className="pane-header">
         <div><h1>Nhân viên</h1><p className="pane-sub">Danh sách nhân viên phụ trách khách hàng, và doanh thu/công nợ quy về theo từng người.</p></div>
-        {isBOD && <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm nhân viên</button>}
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <QuickExportButton label="Xuất Excel Nhân viên" onExport={() => exportEmployeesReport(employees, customers, opportunities, projects)} />
+          {isBOD && <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}><Plus size={15} /> Thêm nhân viên</button>}
+        </div>
       </div>
 
       {!isBOD && <div className="perm-note" style={{ marginBottom: 12 }}>Chỉ BOD được thêm/sửa nhân viên và quản lý tài khoản đăng nhập.</div>}
@@ -1672,6 +1776,7 @@ function SopTab({ opportunities, projects, customers, goToProject, goToOpportuni
           <h1>Quy trình SOP</h1>
           <p className="pane-sub">Đánh giá tiềm năng &amp; điểm nghẽn theo từng chặng của 2 funnel (Sales &amp; Delivery), cùng danh mục khách hàng và công nợ theo công trình.</p>
         </div>
+        <QuickExportButton label="Xuất Excel Quy trình" onExport={() => exportSopReport(opportunities, projects, customers)} />
       </div>
 
       <FunnelBlock title="Sales Funnel — LEAD → WON/LOST" note="Số dự án/cơ hội đang ở hoặc đã vượt qua từng bước."
@@ -2212,6 +2317,13 @@ export default function App() {
       : { ...c, accountOwnerId: employeeId, accountOwnerName: employees.find((e) => e.id === employeeId)?.name || c.accountOwnerName };
     saveDoc("customers", customerId, updated).catch(onWriteError);
   }, [customers, employees]);
+  // Sửa thông tin khách hàng đã có (Tên Doanh nghiệp/Thương hiệu/Chi nhánh,
+  // ngành hàng, tổng quan, lợi thế hợp tác) — nút "Sửa thông tin" ở
+  // CustomerDetail chỉ BOD nhìn thấy (giống EditProjectInfoForm/updateProject).
+  const updateCustomer = useCallback((id, patch) => {
+    const c = customers.find((x) => x.id === id);
+    if (c) saveDoc("customers", id, { ...c, ...patch }).catch(onWriteError);
+  }, [customers]);
 
   /* ---- employee (nhân viên phụ trách) actions — kèm tạo tài khoản Firebase Auth thật ---- */
   const addEmployee = useCallback(async (data) => {
@@ -2333,7 +2445,7 @@ export default function App() {
         )}
         {tab === "customers" && (
           <CustomersTab customers={customers} employees={employees} opportunities={opportunities} projects={projects}
-            addCustomer={addCustomer} reassignOwner={reassignOwner}
+            addCustomer={addCustomer} updateCustomer={updateCustomer} reassignOwner={reassignOwner}
             toggleCustomerTier={toggleCustomerTier} goToProject={goToProject} goToOpportunity={goToOpportunity} isBOD={isBOD} />
         )}
         {tab === "employees" && (
