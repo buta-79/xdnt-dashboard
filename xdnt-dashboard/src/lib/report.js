@@ -104,45 +104,84 @@ export function buildRevenueRows(period, projects) {
 
 export function buildEmployeeRows(employees, customers, opportunities, projects) {
   const summaries = employeeSummary(employees, customers, opportunities, projects);
-  const header = ["Nhân viên", "Vai trò", "Trạng thái", "Số KH phụ trách", "Số công trình", "Pipeline đang mở (₫)", "Giá trị hợp đồng (₫)", "Đã thu (₫)", "Công nợ A/R (₫)"];
-  const rows = summaries.map((s) => [
-    s.employee.name, s.employee.role, s.employee.active ? "Đang hoạt động" : "Đã ngừng",
-    s.customerCount, s.projectCount, s.pipelineValue, s.contractValue, s.collected, s.ar,
-  ]);
+  const header = ["Nhân viên", "Vai trò", "Trạng thái", "Số KH phụ trách", "Số cơ hội đang mở", "Số công trình", "Pipeline đang mở (₫)", "Giá trị hợp đồng (₫)", "Đã thu (₫)", "Công nợ A/R (₫)"];
+  const rows = summaries.map((s) => {
+    const ownedCustomerIds = new Set(customers.filter((c) => c.accountOwnerId === s.employee.id).map((c) => c.id));
+    const openOppCount = opportunities.filter((o) => o.status === "open" && o.customerId && ownedCustomerIds.has(o.customerId)).length;
+    return [
+      s.employee.name, s.employee.role, s.employee.active ? "Đang hoạt động" : "Đã ngừng",
+      s.customerCount, openOppCount, s.projectCount, s.pipelineValue, s.contractValue, s.collected, s.ar,
+    ];
+  });
   return [header, ...rows];
 }
 
 export function buildProjectRows(projects) {
-  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Trạng thái", "Bước hiện tại", "Tên bước", "% tiến độ", "Giá trị hợp đồng (₫)", "Đã thu (₫)", "Công nợ A/R (₫)", "Ngân sách chi phí (₫)", "Chi phí thực tế (₫)", "Ngày tạo"];
+  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Trạng thái", "Bước hiện tại", "Tên bước", "% tiến độ", "Giá trị hợp đồng (₫)", "Đã thu (₫)", "Công nợ A/R (₫)", "Ngân sách chi phí (₫)", "Chi phí thực tế (₫)", "Chênh lệch ngân sách (₫)", "Số điểm nghẽn", "Điểm nghẽn đang mở?", "Ngày tạo"];
   const rows = projects.map((p) => {
     const stg = PROJECT_STAGES.find((s) => s.id === p.currentStage);
     const budget = (p.costs || []).reduce((s, c) => s + c.budget, 0);
     const actual = (p.costs || []).reduce((s, c) => s + c.actual, 0);
+    const bnCount = (p.bottlenecks || []).length;
+    const openBn = (p.bottlenecks || []).some((b) => !b.resolvedAt);
     return [
       p.code, p.name, p.customerName, p.status === "active" ? "Đang triển khai" : p.status === "closed" ? "Đã đóng" : "Tạm dừng",
-      p.currentStage, stg?.label || "", projectStagePct(p), p.contractValue, projectCollected(p), Math.max(0, projectAR(p)), budget, actual, p.createdAt,
+      p.currentStage, stg?.label || "", projectStagePct(p), p.contractValue, projectCollected(p), Math.max(0, projectAR(p)),
+      budget, actual, budget - actual, bnCount, openBn ? "Có" : "Không", p.createdAt,
     ];
   });
   return [header, ...rows];
 }
 
 export function buildOpportunityRows(opportunities) {
-  const header = ["Tên cơ hội", "Khách hàng", "Trạng thái", "Bước hiện tại", "Tên bước", "Giá trị ước tính (₫)", "Ngày tạo", "Kết quả"];
+  const header = ["Tên cơ hội", "Khách hàng", "Trạng thái", "Bước hiện tại", "Tên bước", "Giá trị ước tính (₫)", "Số điểm nghẽn", "Điểm nghẽn đang mở?", "Ngày tạo", "Kết quả"];
   const rows = opportunities.map((o) => {
     const stg = OPP_STAGES.find((s) => s.id === o.currentStage);
     const outcome = o.status === "won" ? `WON — dự án ${o.wonProjectCode}` : o.status === "lost" ? `LOST — ${o.lostReason || ""}` : "Đang theo đuổi";
-    return [o.title, o.customerName, o.status === "open" ? "Đang theo đuổi" : o.status.toUpperCase(), o.currentStage, stg?.label || "", o.value, o.createdAt, outcome];
+    const bnCount = (o.bottlenecks || []).length;
+    const openBn = (o.bottlenecks || []).some((b) => !b.resolvedAt);
+    return [o.title, o.customerName, o.status === "open" ? "Đang theo đuổi" : o.status.toUpperCase(), o.currentStage, stg?.label || "", o.value, bnCount, openBn ? "Có" : "Không", o.createdAt, outcome];
   });
   return [header, ...rows];
 }
 
-export function buildCustomerRows(customers, projects) {
-  const header = ["Doanh nghiệp", "Ngành hàng", "Nhân viên phụ trách", "Nhóm tiềm năng", "Số công trình", "Doanh thu đã thu (₫)", "Công nợ A/R (₫)"];
+/** Mỗi hàng = 1 lần báo điểm nghẽn (đã xử lý hoặc đang mở) trên các dự án. */
+export function buildProjectBottleneckRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Bước", "Lý do điểm nghẽn", "Người báo", "Ngày báo", "Trạng thái"];
+  const rows = [];
+  projects.forEach((p) => {
+    (p.bottlenecks || []).forEach((b) => {
+      const stg = PROJECT_STAGES.find((s) => s.id === b.stageId);
+      rows.push([p.code, p.name, `Bước ${b.stageId} · ${stg?.label || ""}`, b.reason, b.by, b.at, b.resolvedAt ? `Đã xử lý (${b.resolvedAt})` : "Đang mở"]);
+    });
+  });
+  return [header, ...rows];
+}
+
+/** Mỗi hàng = 1 lần báo điểm nghẽn (đã xử lý hoặc đang mở) trên các cơ hội. */
+export function buildOpportunityBottleneckRows(opportunities) {
+  const header = ["Tên cơ hội", "Khách hàng", "Bước", "Lý do điểm nghẽn", "Người báo", "Ngày báo", "Trạng thái"];
+  const rows = [];
+  opportunities.forEach((o) => {
+    (o.bottlenecks || []).forEach((b) => {
+      const stg = OPP_STAGES.find((s) => s.id === b.stageId);
+      rows.push([o.title, o.customerName, `Bước ${b.stageId} · ${stg?.label || ""}`, b.reason, b.by, b.at, b.resolvedAt ? `Đã xử lý (${b.resolvedAt})` : "Đang mở"]);
+    });
+  });
+  return [header, ...rows];
+}
+
+export function buildCustomerRows(customers, projects, opportunities) {
+  const header = ["Tên Doanh nghiệp", "Tên Thương hiệu", "Tên Chi nhánh/Cửa hàng", "Ngành hàng", "Nhân viên phụ trách", "Nhóm tiềm năng", "Số cơ hội đang mở", "Số công trình", "Doanh thu đã thu (₫)", "Công nợ A/R (₫)"];
   const rows = customers.map((c) => {
     const related = projects.filter((p) => p.customerId === c.id);
+    const relatedOpenOpps = (opportunities || []).filter((o) => o.customerId === c.id && o.status === "open");
     const collected = related.reduce((s, p) => s + projectCollected(p), 0);
     const ar = related.reduce((s, p) => s + Math.max(0, projectAR(p)), 0);
-    return [c.company, c.industry, c.accountOwnerName || "Chưa gán", c.tier === "high" ? "Cao" : "Bình thường", related.length, collected, ar];
+    return [
+      c.company, c.brandName || "", c.branchName || "", c.industry, c.accountOwnerName || "Chưa gán",
+      c.tier === "high" ? "Cao" : "Bình thường", relatedOpenOpps.length, related.length, collected, ar,
+    ];
   });
   return [header, ...rows];
 }
@@ -176,9 +215,72 @@ export async function exportMonthlyReport(period, { employees, customers, opport
   addSheet("Doanh thu theo Nhan vien", buildEmployeeRows(employees, customers, opportunities, projects));
   addSheet("Du an", buildProjectRows(projects));
   addSheet("Co hoi ban hang", buildOpportunityRows(opportunities));
-  addSheet("Khach hang", buildCustomerRows(customers, projects));
+  addSheet("Khach hang", buildCustomerRows(customers, projects, opportunities));
   addSheet("Nhiem vu", buildTaskRows(tasks));
   addSheet("Bao hanh", buildWarrantyRows(warrantyRecords));
 
   XLSX.writeFile(wb, `TDDB-BaoCao-${periodFileTag(period)}.xlsx`);
+}
+
+/* ---------------------------------------------------------------------- */
+/*  XUẤT EXCEL THEO TỪNG TRANG — nút "Xuất Excel" ngay trên mỗi trang,       */
+/*  chỉ chứa đúng phạm vi dữ liệu của trang đó (khác với báo cáo tổng ở      */
+/*  Master Dashboard phía trên, vốn gộp toàn bộ dữ liệu theo kỳ).           */
+/* ---------------------------------------------------------------------- */
+
+async function buildWorkbook(sheets) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  sheets.forEach(([name, rows]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name));
+  return { XLSX, wb };
+}
+
+export async function exportCustomersReport(customers, projects, opportunities) {
+  const { XLSX, wb } = await buildWorkbook([
+    ["Khach hang", buildCustomerRows(customers, projects, opportunities)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-KhachHang-${todayISO()}.xlsx`);
+}
+
+export async function exportOpportunitiesReport(opportunities) {
+  const { XLSX, wb } = await buildWorkbook([
+    ["Co hoi ban hang", buildOpportunityRows(opportunities)],
+    ["Diem nghen co hoi", buildOpportunityBottleneckRows(opportunities)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-CoHoi-${todayISO()}.xlsx`);
+}
+
+export async function exportProjectsReport(projects) {
+  const { XLSX, wb } = await buildWorkbook([
+    ["Du an", buildProjectRows(projects)],
+    ["Diem nghen du an", buildProjectBottleneckRows(projects)],
+    ["Doanh thu theo thoi gian", buildRevenueRows({ type: "all" }, projects)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-DuAn-${todayISO()}.xlsx`);
+}
+
+export async function exportEmployeesReport(employees, customers, opportunities, projects) {
+  const { XLSX, wb } = await buildWorkbook([
+    ["Nhan vien", buildEmployeeRows(employees, customers, opportunities, projects)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-NhanVien-${todayISO()}.xlsx`);
+}
+
+export async function exportSopReport(opportunities, projects, customers) {
+  const salesFunnelRows = [
+    ["Bước Sales Funnel", "Số cơ hội đạt/đã qua"],
+    ...OPP_STAGES.map((s) => [`Bước ${s.id} · ${s.label}`, opportunities.filter((o) => o.currentStage >= s.id).length]),
+  ];
+  const deliveryFunnelRows = [
+    ["Bước Delivery Funnel", "Số dự án đạt/đã qua"],
+    ...PROJECT_STAGES.map((s) => [`Bước ${s.id} · ${s.label}`, projects.filter((p) => p.currentStage >= s.id).length]),
+  ];
+  const { XLSX, wb } = await buildWorkbook([
+    ["Sales Funnel", salesFunnelRows],
+    ["Delivery Funnel", deliveryFunnelRows],
+    ["Diem nghen co hoi", buildOpportunityBottleneckRows(opportunities)],
+    ["Diem nghen du an", buildProjectBottleneckRows(projects)],
+    ["Khach hang", buildCustomerRows(customers, projects, opportunities)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-QuyTrinhSOP-${todayISO()}.xlsx`);
 }
