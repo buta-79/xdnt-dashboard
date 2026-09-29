@@ -500,15 +500,16 @@ function NewOpportunityForm({ customers, onCancel, onCreate }) {
           <div className="form-row"><label>Tên khách hàng mới</label><input className="input" value={newCustomerName} onChange={(e) => setNewCustomerName(e.target.value)} /></div>
         )}
       </div>
-      <div className="form-row"><label>Ghi chú</label><input className="input" value={note} onChange={(e) => setNote(e.target.value)} /></div>
+      <div className="form-row"><label>Ghi chú</label><textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></div>
       <div className="form-actions"><button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button><button className="btn btn-primary btn-sm" onClick={submit}><Plus size={14} /> Thêm cơ hội</button></div>
     </div>
   );
 }
 
-function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, onSendBack, onWon, onLost, goToProject }) {
+function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, onSendBack, onWon, onLost, onDelete, goToProject }) {
   const [showLostForm, setShowLostForm] = useState(false);
   const [lostReason, setLostReason] = useState("");
+  const isBOD = currentRole === "BOD";
 
   return (
     <div className="project-detail">
@@ -517,7 +518,14 @@ function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, 
           <div className="pd-client"><Building2 size={13} /> {opportunity.customerName}</div>
           <h2>{opportunity.title}</h2>
         </div>
-        <StatusPill status={opportunity.status} map={{ open: "Đang theo đuổi", won: "WON", lost: "LOST" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isBOD && (
+            <button className="btn btn-ghost btn-sm" onClick={() => { if (confirm(`Xoá hẳn cơ hội "${opportunity.title}"? Không thể hoàn tác.`)) onDelete(); }}>
+              <Trash2 size={13} /> Xoá
+            </button>
+          )}
+          <StatusPill status={opportunity.status} map={{ open: "Đang theo đuổi", won: "WON", lost: "LOST" }} />
+        </div>
       </div>
 
       <div className="pd-payment panel-sub">
@@ -568,7 +576,7 @@ function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, 
   );
 }
 
-function OpportunitiesTab({ opportunities, customers, currentRole, selectedId, setSelectedId, addOpportunity, toggleGate, advanceOpportunity, sendBackOpportunity, markWon, markLost, goToProject }) {
+function OpportunitiesTab({ opportunities, customers, currentRole, selectedId, setSelectedId, addOpportunity, toggleGate, advanceOpportunity, sendBackOpportunity, markWon, markLost, removeOpportunity, goToProject }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("open");
   const filtered = opportunities.filter((o) => filter === "all" ? true : o.status === filter);
@@ -618,6 +626,7 @@ function OpportunitiesTab({ opportunities, customers, currentRole, selectedId, s
               onSendBack={(reason) => sendBackOpportunity(selected.id, reason)}
               onWon={() => markWon(selected.id)}
               onLost={(reason) => markLost(selected.id, reason)}
+              onDelete={() => { removeOpportunity(selected.id); setSelectedId(null); }}
               goToProject={goToProject} />
           ) : <div className="empty-note">Chọn một cơ hội để xem chi tiết.</div>}
         </div>
@@ -670,11 +679,35 @@ function EditProjectInfoForm({ project, customers, onCancel, onSave }) {
   );
 }
 
-function CostPanel({ project, onAddCost }) {
+function EditCostRowForm({ cost, onCancel, onSave }) {
+  const [category, setCategory] = useState(cost.category);
+  const [budget, setBudget] = useState(String(cost.budget));
+  const [actual, setActual] = useState(String(cost.actual));
+  const [note, setNote] = useState(cost.note || "");
+  return (
+    <tr className="revenue-event-form-row">
+      <td colSpan={4}>
+        <div className="revenue-event-form" style={{ margin: 0 }}>
+          <input className="input input-sm" placeholder="Hạng mục" value={category} onChange={(e) => setCategory(e.target.value)} />
+          <NumberInput className="input input-sm" value={budget} onChange={setBudget} placeholder="Ngân sách (₫)" />
+          <NumberInput className="input input-sm" value={actual} onChange={setActual} placeholder="Thực tế (₫)" />
+          <input className="input input-sm" placeholder="Ghi chú" value={note} onChange={(e) => setNote(e.target.value)} />
+          <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { if (category.trim()) onSave({ category: category.trim(), budget: Number(budget) || 0, actual: Number(actual) || 0, note: note.trim() }); }}>
+            <Check size={13} /> Lưu điều chỉnh
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function CostPanel({ project, onAddCost, onUpdateCost, isBOD }) {
   const [showForm, setShowForm] = useState(false);
   const [category, setCategory] = useState("");
   const [budget, setBudget] = useState("");
   const [actual, setActual] = useState("");
+  const [editingId, setEditingId] = useState(null);
   const costs = project.costs || [];
   const totalBudget = costs.reduce((s, c) => s + c.budget, 0);
   const totalActual = costs.reduce((s, c) => s + c.actual, 0);
@@ -684,17 +717,31 @@ function CostPanel({ project, onAddCost }) {
       <div className="pd-payment-head"><h4>Chi phí (ngân sách vs. thực tế)</h4>
         <button className="btn btn-ghost btn-sm" onClick={() => setShowForm((v) => !v)}><Plus size={13} /> Thêm mục chi phí</button>
       </div>
+      {!isBOD && <div className="perm-note" style={{ marginBottom: 8 }}>Ngân sách/chi phí chỉ là con số dự kiến, có thể thay đổi theo thực tế thi công — chỉ BOD được điều chỉnh (sửa) 1 mục đã có. Bạn vẫn thêm mục chi phí mới được như bình thường.</div>}
       {costs.length === 0 && <div className="empty-note">Chưa có mục chi phí nào.</div>}
       {costs.length > 0 && (
         <div className="forecast-table-wrap">
           <table className="forecast-table">
-            <thead><tr><th>Hạng mục</th><th>Ngân sách</th><th>Thực tế</th><th>Chênh lệch</th></tr></thead>
+            <thead><tr><th>Hạng mục</th><th>Ngân sách</th><th>Thực tế</th><th>Chênh lệch</th>{isBOD && <th></th>}</tr></thead>
             <tbody>
               {costs.map((c) => {
+                if (editingId === c.id) {
+                  return (
+                    <EditCostRowForm key={c.id} cost={c} onCancel={() => setEditingId(null)}
+                      onSave={(patch) => { onUpdateCost(c.id, patch); setEditingId(null); }} />
+                  );
+                }
                 const diff = c.budget - c.actual;
-                return <tr key={c.id}><td>{c.category}{c.note && <div className="dim" style={{ fontSize: 11 }}>{c.note}</div>}</td><td>{formatCompactVND(c.budget)}</td><td>{formatCompactVND(c.actual)}</td><td className={diff >= 0 ? "figure-pos" : "figure-debt"}>{formatCompactVND(diff)}</td></tr>;
+                return (
+                  <tr key={c.id}>
+                    <td>{c.category}{c.note && <div className="dim" style={{ fontSize: 11 }}>{c.note}</div>}</td>
+                    <td>{formatCompactVND(c.budget)}</td><td>{formatCompactVND(c.actual)}</td>
+                    <td className={diff >= 0 ? "figure-pos" : "figure-debt"}>{formatCompactVND(diff)}</td>
+                    {isBOD && <td><button className="btn btn-ghost btn-sm" onClick={() => setEditingId(c.id)}><PenLine size={12} /> Điều chỉnh</button></td>}
+                  </tr>
+                );
               })}
-              <tr><td><strong>Tổng</strong></td><td><strong>{formatCompactVND(totalBudget)}</strong></td><td><strong>{formatCompactVND(totalActual)}</strong></td><td className={totalBudget - totalActual >= 0 ? "figure-pos" : "figure-debt"}><strong>{formatCompactVND(totalBudget - totalActual)}</strong></td></tr>
+              <tr><td><strong>Tổng</strong></td><td><strong>{formatCompactVND(totalBudget)}</strong></td><td><strong>{formatCompactVND(totalActual)}</strong></td><td className={totalBudget - totalActual >= 0 ? "figure-pos" : "figure-debt"}><strong>{formatCompactVND(totalBudget - totalActual)}</strong></td>{isBOD && <td></td>}</tr>
             </tbody>
           </table>
         </div>
@@ -753,7 +800,7 @@ function RevenueLedger({ project, onAddEvent }) {
         </select>
         <input type="date" className="input input-sm" value={date} onChange={(e) => setDate(e.target.value)} />
         <NumberInput className="input input-sm" value={amount} onChange={setAmount} placeholder="Số tiền (₫)" />
-        <input className="input input-sm" placeholder="Ghi chú" value={note} onChange={(e) => setNote(e.target.value)} />
+        <textarea className="input input-sm" rows={1} placeholder="Ghi chú" value={note} onChange={(e) => setNote(e.target.value)} />
         <button className="btn btn-outline btn-sm" onClick={submit}><Plus size={13} /> Ghi nhận</button>
       </div>
     </div>
@@ -796,7 +843,7 @@ function NewProjectForm({ onCancel, onCreate, customers }) {
   );
 }
 
-function ProjectDetail({ project, customers, currentRole, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost }) {
+function ProjectDetail({ project, customers, currentRole, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost }) {
   const [editingInfo, setEditingInfo] = useState(false);
   const isBOD = currentRole === "BOD";
   useEffect(() => setEditingInfo(false), [project.id]);
@@ -835,7 +882,8 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
         <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>{pct}% · Bước {project.currentStage}/{PROJECT_FINAL_STAGE_ID}</div>
       </div>
 
-      <CostPanel project={project} onAddCost={(cat, b, a) => addCost(project.id, cat, b, a)} />
+      <CostPanel project={project} isBOD={isBOD} onAddCost={(cat, b, a) => addCost(project.id, cat, b, a)}
+        onUpdateCost={(costId, patch) => updateCost(project.id, costId, patch)} />
       <RevenueLedger project={project} onAddEvent={(type, date, amount, note) => addRevenueEvent(project.id, type, date, amount, note)} />
       <BottleneckLog bottlenecks={project.bottlenecks} stageDefs={PROJECT_STAGES} />
 
@@ -859,7 +907,7 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
   );
 }
 
-function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelectedCode, createProject, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost }) {
+function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelectedCode, createProject, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("active");
   const filtered = projects.filter((p) => filter === "all" ? true : p.status === filter);
@@ -905,7 +953,7 @@ function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelect
           {selected ? (
             <ProjectDetail project={selected} customers={customers} currentRole={currentRole} updateProject={updateProject}
               toggleGate={toggleGate} advanceProject={advanceProject} sendBackProject={sendBackProject}
-              addRevenueEvent={addRevenueEvent} addCost={addCost} />
+              addRevenueEvent={addRevenueEvent} addCost={addCost} updateCost={updateCost} />
           ) : <div className="empty-note">Chọn một dự án để xem chi tiết.</div>}
         </div>
       </div>
@@ -937,7 +985,7 @@ function NewTaskForm({ projects, onCancel, onCreate }) {
         <div className="form-row"><label>Người chịu trách nhiệm</label><input className="input" value={assignee} onChange={(e) => setAssignee(e.target.value)} /></div>
         <div className="form-row"><label>Deadline</label><input type="date" className="input" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></div>
       </div>
-      <div className="form-row"><label>Ghi chú</label><input className="input" value={note} onChange={(e) => setNote(e.target.value)} /></div>
+      <div className="form-row"><label>Ghi chú</label><textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></div>
       <div className="form-actions"><button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button><button className="btn btn-primary btn-sm" onClick={submit}><Plus size={14} /> Thêm task</button></div>
     </div>
   );
@@ -1005,7 +1053,7 @@ function WarrantyNoteForm({ onAdd }) {
   const submit = () => { if (text.trim()) { onAdd(text.trim()); setText(""); } };
   return (
     <div className="cskh-note-form">
-      <input className="input input-sm" placeholder="Ghi chú chăm sóc / phản hồi bảo hành..." value={text} onChange={(e) => setText(e.target.value)} />
+      <textarea className="input input-sm" rows={1} placeholder="Ghi chú chăm sóc / phản hồi bảo hành..." value={text} onChange={(e) => setText(e.target.value)} />
       <button className="btn btn-outline btn-sm" onClick={submit}><Plus size={13} /> Ghi chú</button>
     </div>
   );
@@ -1915,7 +1963,18 @@ export default function App() {
   }, [authUser, userProfile]);
 
   /* ---- nhập dữ liệu MẪU 1 lần (chỉ khi Firestore còn trống, chỉ BOD) ---- */
+  const [seeding, setSeeding] = useState(false);
   const seedDemoData = useCallback(async () => {
+    // Chặn bấm 2 lần (hoặc bấm lại khi đã có dữ liệu) tạo trùng dữ liệu mẫu —
+    // trùng sẽ khiến các số tổng ở Dashboard (doanh thu/chi phí/gross profit)
+    // bị cộng dồn 2 lần dù trông "chỉ có 1 dự án" (vì mỗi lần bấm tạo document
+    // Firestore mới, code/tên giống nhau nhưng id khác nhau).
+    if (seeding) return;
+    if ((employees.length || customers.length || projects.length || opportunities.length) &&
+        !confirm("Đã có dữ liệu trong hệ thống. Nhập dữ liệu mẫu lần nữa có thể tạo dữ liệu TRÙNG (làm sai số liệu Dashboard). Vẫn tiếp tục?")) {
+      return;
+    }
+    setSeeding(true);
     try {
       const emps = seedEmployees();
       const custs = seedCustomers();
@@ -1935,8 +1994,10 @@ export default function App() {
       ]);
     } catch (e) {
       alert("Nhập dữ liệu mẫu thất bại: " + (e?.message || "lỗi không xác định"));
+    } finally {
+      setSeeding(false);
     }
-  }, []);
+  }, [seeding, employees.length, customers.length, projects.length, opportunities.length]);
 
   /* ---- helper: advance 1 bước + tự resolve điểm nghẽn nếu vừa xử lý xong bước bị trả về ---- */
   const advanceFlow = (flow, stageDefs, role) => {
@@ -1967,10 +2028,16 @@ export default function App() {
     if (o) saveDoc("opportunities", id, sendBackGate(o, reason, currentRole, todayISO())).catch(onWriteError);
   }, [opportunities, currentRole]);
 
+  // Chặn bấm "WON — Tạo dự án" 2 lần liên tiếp (double-click, hoặc bấm lại
+  // khi mạng chậm chưa thấy phản hồi) tạo ra 2 document dự án trùng nhau
+  // (cùng tên/mã nhưng id khác nhau) — nếu không chặn, dự án bị đếm 2 lần ở
+  // các số tổng trên Dashboard (doanh thu, chi phí, gross profit).
+  const wonInFlightRef = useRef(new Set());
   const markWon = useCallback((id) => {
-    const now = todayISO();
     const opp = opportunities.find((o) => o.id === id);
-    if (!opp) return;
+    if (!opp || opp.status !== "open" || wonInFlightRef.current.has(id)) return;
+    wonInFlightRef.current.add(id);
+    const now = todayISO();
     const code = nextProjectCode(projects);
     const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: opp.value, createdAt: now });
     const updatedOpp = {
@@ -1979,7 +2046,8 @@ export default function App() {
     };
     Promise.all([saveDoc("projects", project.id, project), saveDoc("opportunities", id, updatedOpp)])
       .then(() => { setSelectedProjectCode(code); setTab("projects"); })
-      .catch(onWriteError);
+      .catch(onWriteError)
+      .finally(() => wonInFlightRef.current.delete(id));
   }, [opportunities, projects, currentRole]);
 
   const markLost = useCallback((id, reason) => {
@@ -1992,6 +2060,12 @@ export default function App() {
     };
     saveDoc("opportunities", id, updated).catch(onWriteError);
   }, [opportunities, currentRole]);
+  // Xoá hẳn 1 cơ hội — chỉ BOD (khớp với firestore.rules: opportunities chỉ
+  // BOD được delete; nút "Xoá" ở OpportunityDetail cũng chỉ BOD nhìn thấy).
+  const removeOpportunity = useCallback((id) => {
+    if (!isBOD) { alert("Chỉ BOD được xoá cơ hội."); return; }
+    removeDoc("opportunities", id).catch(onWriteError);
+  }, [isBOD]);
 
   /* ---- project actions ---- */
   const updateProject = useCallback((id, patch) => {
@@ -2033,6 +2107,16 @@ export default function App() {
     const p = projects.find((x) => x.id === id);
     if (p) saveDoc("projects", id, { ...p, costs: [...(p.costs || []), makeCost(category, budget, actual)] }).catch(onWriteError);
   }, [projects]);
+  // Điều chỉnh 1 mục chi phí đã có (ngân sách/thực tế là số dự kiến, có thể đổi
+  // theo thực tế thi công) — chỉ BOD được làm, khớp với nút "Điều chỉnh" ở
+  // CostPanel (chỉ BOD nhìn thấy nút này).
+  const updateCost = useCallback((projectId, costId, patch) => {
+    if (!isBOD) { alert("Chỉ BOD được điều chỉnh mục chi phí đã có."); return; }
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return;
+    const costs = (p.costs || []).map((c) => (c.id === costId ? { ...c, ...patch } : c));
+    saveDoc("projects", projectId, { ...p, costs }).catch(onWriteError);
+  }, [projects, isBOD]);
 
   /* ---- warranty auto-tạo khi dự án vào bước Warranty ---- */
   useEffect(() => {
@@ -2179,7 +2263,7 @@ export default function App() {
             <p className="pane-sub" style={{ marginBottom: 10 }}>
               Chưa có dữ liệu nào trên Firestore. Bấm nút dưới để nhập 1 bộ dữ liệu MẪU (khách hàng/cơ hội/dự án demo) vào để xem thử giao diện — có thể xoá sau trong Firestore Console bất cứ lúc nào.
             </p>
-            <button className="btn btn-primary btn-sm" onClick={seedDemoData}><Database size={14} /> Nhập dữ liệu mẫu để test</button>
+            <button className="btn btn-primary btn-sm" onClick={seedDemoData} disabled={seeding}><Database size={14} /> {seeding ? "Đang nhập..." : "Nhập dữ liệu mẫu để test"}</button>
           </div>
         )}
         {tab === "dashboard" && (
@@ -2190,13 +2274,13 @@ export default function App() {
           <OpportunitiesTab opportunities={opportunities} customers={customers} currentRole={currentRole}
             selectedId={selectedOpportunityId} setSelectedId={setSelectedOpportunityId} addOpportunity={addOpportunity}
             toggleGate={toggleOppGate} advanceOpportunity={advanceOpportunity} sendBackOpportunity={sendBackOpportunity}
-            markWon={markWon} markLost={markLost} goToProject={goToProject} />
+            markWon={markWon} markLost={markLost} removeOpportunity={removeOpportunity} goToProject={goToProject} />
         )}
         {tab === "projects" && (
           <ProjectsTab projects={projects} customers={customers} currentRole={currentRole}
             selectedCode={selectedProjectCode} setSelectedCode={setSelectedProjectCode} createProject={createProject}
             updateProject={updateProject} toggleGate={toggleProjectGate} advanceProject={advanceProject}
-            sendBackProject={sendBackProject} addRevenueEvent={addRevenueEvent} addCost={addCost} />
+            sendBackProject={sendBackProject} addRevenueEvent={addRevenueEvent} addCost={addCost} updateCost={updateCost} />
         )}
         {tab === "customers" && (
           <CustomersTab customers={customers} employees={employees} opportunities={opportunities} projects={projects}
