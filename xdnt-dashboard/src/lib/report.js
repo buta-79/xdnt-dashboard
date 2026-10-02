@@ -11,8 +11,9 @@
 
 import {
   PROJECT_STAGES, OPP_STAGES, PROJECT_ACCEPTANCE_STAGE_ID,
-  projectCollected, projectAR, projectStagePct, projectRiskLevel,
-  isTaskOverdue, employeeSummary, addMonths, todayISO,
+  projectCollected, projectAR, projectStagePct, projectRiskLevel, projectScheduleStatus,
+  milestoneStatus, milestoneCumPct, isTaskOverdue, employeeSummary, addMonths, todayISO,
+  PRIORITY_LABELS,
 } from "../data/seed";
 
 /* ---------------------------------------------------------------------- */
@@ -158,6 +159,114 @@ export function buildProjectBottleneckRows(projects) {
   return [header, ...rows];
 }
 
+const SCHEDULE_STATUS_LABEL = { good: "Đúng tiến độ", bad: "Trễ tiến độ / điểm nghẽn", neutral: "Chưa lập kế hoạch", done: "Đã hoàn thành (lưu trữ)" };
+
+/** Kế hoạch triển khai — 1 dòng / dự án (chỉ dự án đang triển khai, dùng cho
+ * báo cáo nhanh BOD hoặc trao đổi giữa các phòng ban). */
+export function buildTimelineRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Ưu tiên", "Ngày bắt đầu dự kiến", "Ngày kết thúc dự kiến", "Bước hiện tại", "Tên bước", "% tiến độ", "Trạng thái tiến độ", "Số công tác bổ sung chưa xong", "Giá trị hợp đồng (₫)"];
+  const rows = projects.filter((p) => p.status !== "closed").map((p) => {
+    const stg = PROJECT_STAGES.find((s) => s.id === p.currentStage);
+    const openWorkItems = (p.workItems || []).filter((w) => w.status !== "done").length;
+    return [
+      p.code, p.name, p.customerName, PRIORITY_LABELS[p.priority] || p.priority,
+      p.plannedStart || "", p.plannedEnd || "", p.currentStage, stg?.label || "",
+      projectStagePct(p), SCHEDULE_STATUS_LABEL[projectScheduleStatus(p)] || "",
+      openWorkItems, p.contractValue,
+    ];
+  });
+  return [header, ...rows];
+}
+
+/** Đối chiếu kế hoạch từng bước (dự kiến vs thực tế) — 1 dòng / bước / dự án. */
+export function buildStagePlanRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Bước số", "Tên bước", "Ngày dự kiến hoàn thành", "Ngày hoàn thành thực tế", "Chênh lệch (ngày trễ)"];
+  const rows = [];
+  projects.forEach((p) => {
+    PROJECT_STAGES.forEach((s) => {
+      const st = p.stages[s.id];
+      if (!st || !st.plannedDate) return;
+      const lateDays = st.completedAt ? Math.round((new Date(st.completedAt) - new Date(st.plannedDate)) / 86400000)
+        : Math.round((new Date(todayISO()) - new Date(st.plannedDate)) / 86400000);
+      rows.push([p.code, p.name, s.id, s.label, st.plannedDate, st.completedAt || "(chưa xong)", lateDays]);
+    });
+  });
+  return [header, ...rows];
+}
+
+/** Công tác bổ sung (ngoài phạm vi ban đầu, theo yêu cầu CĐT) — 1 dòng / công tác. */
+export function buildWorkItemRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Tên công tác / yêu cầu từ CĐT", "Ngày yêu cầu", "Trạng thái", "Ghi chú"];
+  const STATUS_LABEL = { todo: "Chưa làm", doing: "Đang làm", done: "Đã xong" };
+  const rows = [];
+  projects.forEach((p) => {
+    (p.workItems || []).forEach((w) => {
+      rows.push([p.code, p.name, w.title, w.requestedAt, STATUS_LABEL[w.status] || w.status, w.note || ""]);
+    });
+  });
+  return [header, ...rows];
+}
+
+/** Chi phí phát sinh theo từng hạng mục — 1 dòng / mục chi phí, kèm tổng phát
+ * sinh & chênh lệch so với ngân sách của cả dự án để đối chiếu nhanh. */
+export function buildCostBreakdownRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Hạng mục", "Ngân sách (₫)", "Thực tế (₫)", "Ghi chú", "Tổng ngân sách DA (₫)", "Tổng thực tế DA (₫)", "Chênh lệch DA (₫)"];
+  const rows = [];
+  projects.forEach((p) => {
+    const costs = p.costs || [];
+    if (!costs.length) return;
+    const totalBudget = costs.reduce((s, c) => s + c.budget, 0);
+    const totalActual = costs.reduce((s, c) => s + c.actual, 0);
+    costs.forEach((c) => {
+      rows.push([p.code, p.name, c.category, c.budget, c.actual, c.note || "", totalBudget, totalActual, totalBudget - totalActual]);
+    });
+  });
+  return [header, ...rows];
+}
+
+/** Dự án đã hoàn thành (lưu trữ) nhưng còn công nợ — bàn giao CSKH & thu công nợ. */
+export function buildCompletedProjectsHandoffRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Giá trị hợp đồng (₫)", "Đã thu (₫)", "Còn nợ (₫)"];
+  const rows = projects.filter((p) => p.status === "closed" && projectAR(p) > 0)
+    .map((p) => [p.code, p.name, p.customerName, p.contractValue, projectCollected(p), projectAR(p)]);
+  return [header, ...rows];
+}
+
+/** Công nợ tổng hợp — 1 dòng / dự án đang theo dõi (chưa thu đủ, không phân
+ * biệt đang triển khai hay đã lưu trữ). */
+export function buildDebtSummaryRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Giá trị HĐ (₫)", "Đã thu (₫)", "% đã thu", "Còn nợ (₫)", "Đợt gần nhất chưa thu", "Trạng thái đợt"];
+  const DEBT_STATUS_LABEL = { overdue: "Quá hạn", upcoming: "Sắp tới hạn", ontrack: "Đúng hạn", paid: "Đã thu đủ", none: "Chưa thiết lập đợt" };
+  const rows = projects.filter((p) => projectAR(p) > 0).map((p) => {
+    const list = p.paymentMilestones || [];
+    let next = null, nextStatus = "none";
+    for (let i = 0; i < list.length; i++) {
+      const st = milestoneStatus(p, i);
+      if (st !== "paid") { next = list[i]; nextStatus = st; break; }
+    }
+    const pctCollected = p.contractValue ? Math.round((projectCollected(p) / p.contractValue) * 100) : 0;
+    return [
+      p.code, p.name, p.customerName, p.contractValue, projectCollected(p), pctCollected, projectAR(p),
+      next ? `${next.label} (${next.pct}% · ${next.plannedDate})` : "—", DEBT_STATUS_LABEL[nextStatus],
+    ];
+  });
+  return [header, ...rows];
+}
+
+/** Chi tiết từng đợt thanh toán — 1 dòng / đợt / dự án (vì mỗi hợp đồng tự
+ * định nghĩa đợt riêng). */
+export function buildPaymentMilestoneRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Tên đợt", "% hợp đồng", "Số tiền dự kiến (₫)", "Ngày dự kiến thu", "Trạng thái"];
+  const DEBT_STATUS_LABEL = { overdue: "Quá hạn", upcoming: "Sắp tới hạn", ontrack: "Đúng hạn", paid: "Đã thu đủ phần này" };
+  const rows = [];
+  projects.forEach((p) => {
+    (p.paymentMilestones || []).forEach((m, i) => {
+      rows.push([p.code, p.name, m.label, m.pct, Math.round((p.contractValue || 0) * m.pct / 100), m.plannedDate, DEBT_STATUS_LABEL[milestoneStatus(p, i)] || ""]);
+    });
+  });
+  return [header, ...rows];
+}
+
 /** Mỗi hàng = 1 lần báo điểm nghẽn (đã xử lý hoặc đang mở) trên các cơ hội. */
 export function buildOpportunityBottleneckRows(opportunities) {
   const header = ["Tên cơ hội", "Khách hàng", "Bước", "Lý do điểm nghẽn", "Người báo", "Ngày báo", "Trạng thái"];
@@ -283,4 +392,28 @@ export async function exportSopReport(opportunities, projects, customers) {
     ["Khach hang", buildCustomerRows(customers, projects, opportunities)],
   ]);
   XLSX.writeFile(wb, `TDDB-QuyTrinhSOP-${todayISO()}.xlsx`);
+}
+
+/** Trang "Kế hoạch triển khai" — kế hoạch tổng hợp tất cả dự án đang triển
+ * khai, đối chiếu từng bước, công tác bổ sung, chi phí phát sinh theo hạng
+ * mục, và danh sách dự án đã hoàn thành còn công nợ (bàn giao CSKH). */
+export async function exportTimelineReport(projects) {
+  const { XLSX, wb } = await buildWorkbook([
+    ["Ke hoach tong hop", buildTimelineRows(projects)],
+    ["Doi chieu tung buoc", buildStagePlanRows(projects)],
+    ["Cong tac bo sung", buildWorkItemRows(projects)],
+    ["Chi phi phat sinh", buildCostBreakdownRows(projects)],
+    ["Du an da hoan thanh", buildCompletedProjectsHandoffRows(projects)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-KeHoachTrienKhai-${todayISO()}.xlsx`);
+}
+
+/** Trang "Thu hồi công nợ" — công nợ tổng hợp theo dự án + chi tiết từng đợt
+ * thanh toán (mỗi hợp đồng tự định nghĩa đợt riêng). */
+export async function exportDebtReport(projects) {
+  const { XLSX, wb } = await buildWorkbook([
+    ["Cong no tong hop", buildDebtSummaryRows(projects)],
+    ["Chi tiet dot thanh toan", buildPaymentMilestoneRows(projects)],
+  ]);
+  XLSX.writeFile(wb, `TDDB-ThuHoiCongNo-${todayISO()}.xlsx`);
 }
