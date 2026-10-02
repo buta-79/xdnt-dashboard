@@ -81,7 +81,7 @@ export function nextProjectCode(existingProjects, year = CURRENT_YEAR) {
 export function buildStages(stageDefs) {
   const obj = {};
   stageDefs.forEach((s) => {
-    obj[s.id] = { state: "pending", gateChecked: s.gate.map(() => false), completedAt: null, completedBy: null };
+    obj[s.id] = { state: "pending", gateChecked: s.gate.map(() => false), completedAt: null, completedBy: null, plannedDate: null };
   });
   return obj;
 }
@@ -177,16 +177,35 @@ export const PROJECT_FINAL_STAGE_ID = PROJECT_STAGES[PROJECT_STAGES.length - 1].
 export const PROJECT_WARRANTY_STAGE_ID = PROJECT_STAGES.find((s) => s.key === "warranty").id;
 export const PROJECT_ACCEPTANCE_STAGE_ID = PROJECT_STAGES.find((s) => s.key === "acceptance").id;
 
+// Mức ưu tiên dùng cho trang "Kế hoạch triển khai" (dashboard tổng hợp tất cả
+// dự án đã ký kết) — không ảnh hưởng tới Stage-Gate.
+export const PRIORITIES = ["high", "normal", "low"];
+export const PRIORITY_LABELS = { high: "Cao", normal: "Trung bình", low: "Thấp" };
+
+// Các hạng mục chi phí phát sinh "chuẩn" gợi ý khi ghi nhận ở CostPanel — người
+// dùng vẫn có thể chọn "Khác..." để nhập hạng mục tự do như trước.
+export const COST_CATEGORY_PRESETS = [
+  "Chi phí Lobby",
+  "Chi phí triển khai công trình",
+  "Chi phí phát sinh vật tư, nhân công",
+  "Chi phí giám sát",
+  "Chi phí phụ khác",
+];
+
 export function makeProject(code, data) {
   return {
     id: uid("p"), code,
     name: data.name, customerId: data.customerId, customerName: data.customerName,
     scope: data.scope || "", contractValue: data.contractValue || 0,
     currentStage: 1, status: "active", // active | closed | on_hold
+    priority: data.priority || "normal", // high | normal | low — dùng cho Kế hoạch triển khai
+    plannedStart: data.plannedStart || null, plannedEnd: data.plannedEnd || null, // ngày dự kiến tổng của cả dự án
     stages: buildStages(PROJECT_STAGES),
     bottlenecks: [],
     revenueEvents: [], // ledger thu/chi tiền: {id, type:"invoice"|"payment", date, amount, note}
     costs: [], // {id, category, budget, actual, note}
+    workItems: [], // công tác bổ sung ngoài phạm vi ban đầu, theo yêu cầu CĐT: {id, title, requestedAt, status:"todo"|"doing"|"done", note}
+    paymentMilestones: [], // đợt thanh toán DỰ KIẾN riêng theo từng dự án: {id, label, pct, plannedDate} — số tiền thực thu vẫn lấy từ revenueEvents (1 nguồn dữ liệu duy nhất)
     createdAt: data.createdAt || todayISO(),
   };
 }
@@ -206,6 +225,44 @@ export function projectRiskLevel(project) {
   if (project.status !== "active") return "none";
   if (hasOpenBottleneck(project)) return "red";
   return "green";
+}
+
+/* ---- Kế hoạch triển khai — đối chiếu dự kiến vs thực tế từng bước ---- */
+// "good" = đúng tiến độ, "bad" = trễ tiến độ hoặc có điểm nghẽn, "neutral" =
+// chưa lập kế hoạch dự kiến, "done" = đã lưu trữ (closed).
+export function projectScheduleStatus(project) {
+  if (project.status === "closed") return "done";
+  if (hasOpenBottleneck(project)) return "bad";
+  const stage = project.stages[project.currentStage];
+  if (!stage || !stage.plannedDate) return "neutral";
+  if (stage.state === "done") return "good";
+  return daysBetween(stage.plannedDate, todayISO()) > 0 ? "bad" : "good";
+}
+
+/* ---- Thu hồi công nợ — mỗi dự án tự định nghĩa đợt thanh toán riêng ---- */
+// Số tiền ĐÃ thu luôn lấy từ revenueEvents (projectCollected) — paymentMilestones
+// chỉ là LỊCH dự kiến (label, % hợp đồng, ngày dự kiến), không có cờ "đã thu"
+// riêng, để tránh ghi nhận 2 nơi lệch nhau.
+export function milestoneCumPct(project, uptoIndex) {
+  return (project.paymentMilestones || []).slice(0, uptoIndex + 1).reduce((s, m) => s + (m.pct || 0), 0);
+}
+export function milestoneStatus(project, index) {
+  const m = (project.paymentMilestones || [])[index];
+  if (!m) return "none";
+  const cumPct = milestoneCumPct(project, index);
+  const expected = (project.contractValue || 0) * cumPct / 100;
+  if (projectCollected(project) >= expected) return "paid";
+  const d = daysBetween(todayISO(), m.plannedDate);
+  if (d < 0) return "overdue";
+  if (d <= 14) return "upcoming";
+  return "ontrack";
+}
+export function nextPaymentMilestone(project) {
+  const list = project.paymentMilestones || [];
+  for (let i = 0; i < list.length; i++) {
+    if (milestoneStatus(project, i) !== "paid") return { milestone: list[i], index: i, status: milestoneStatus(project, i) };
+  }
+  return null;
 }
 export function makeRevenueEvent(type, date, amount, note) {
   return { id: uid("rev"), type, date, amount, note };
