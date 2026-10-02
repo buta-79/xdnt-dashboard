@@ -1,6 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-:root {
+.xdnt-app {
   --bg: #F6F3EC;
   --panel: #FFFFFF;
   --ink: #20261F;
@@ -20,11 +20,6 @@
   --sidebar-bg: #1C2320;
   --sidebar-text: #D8D2C2;
   --radius: 10px;
-}
-/* Các biến màu ở trên đặt tại :root (toàn trang) — không chỉ trong .xdnt-app —
-   để màn hình đăng nhập/loading (hiện TRƯỚC khi vào .xdnt-app, lúc chưa đăng
-   nhập) vẫn lấy được đúng màu, không bị trắng trơn/mất màu nút. */
-.xdnt-app {
   font-family: 'Inter', -apple-system, sans-serif;
   color: var(--ink);
   display: flex;
@@ -342,6 +337,13 @@
 .risk-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
 .risk-red { background: var(--red-soft); color: var(--red); }
 .risk-green { background: var(--green-soft); color: var(--green); }
+.risk-amber { background: var(--amber-soft); color: var(--amber); }
+.risk-neutral { background: var(--bg); color: var(--ink-soft); }
+
+/* ---- Kế hoạch triển khai — mức ưu tiên ---- */
+.priority-dots { display: inline-flex; gap: 3px; vertical-align: middle; }
+.priority-dots i { width: 7px; height: 7px; border-radius: 2px; background: var(--line-dark); display: inline-block; }
+.priority-dots i.on { background: var(--copper); }
 
 /* ---- Extra status pills (Opportunity / Project) ---- */
 .status-won { background: var(--green-soft); color: var(--green); }
