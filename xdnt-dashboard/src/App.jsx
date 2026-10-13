@@ -16,6 +16,7 @@ import {
   exportTimelineReport, exportDebtReport,
 } from "./lib/report";
 import { parseTimelineImportFile } from "./lib/importTimeline";
+import TimelineBoard from "./TimelineBoard";
 import {
   todayISO, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths, daysBetween,
   nextProjectCode, canAdvanceGate, toggleGateCheck, advanceGateStage, sendBackGate,
@@ -23,7 +24,8 @@ import {
   OPP_STAGES, OPP_DECISION_STAGE_ID, makeOpportunity,
   PROJECT_STAGES, PROJECT_FINAL_STAGE_ID, PROJECT_WARRANTY_STAGE_ID, PROJECT_ACCEPTANCE_STAGE_ID, makeProject,
   projectCollected, projectAR, projectStagePct, projectRiskLevel, makeRevenueEvent, makeCost,
-  projectScheduleStatus, milestoneStatus, nextPaymentMilestone,
+  milestoneStatus, nextPaymentMilestone,
+  projectPlan, planStatus, replanAfterAdvance, planToPatch, suggestPlan, suggestPlanDays,
   PRIORITIES, PRIORITY_LABELS, COST_CATEGORY_PRESETS,
   makeTask, isTaskOverdue, makeWarrantyRecord, makeEmployee, employeeSummary,
   seedCustomers, seedOpportunities, seedProjects, seedWarrantyRecords, seedTasks, seedForecast, seedEmployees,
@@ -897,88 +899,31 @@ function NewProjectForm({ onCancel, onCreate, customers }) {
   );
 }
 
-function TimelinePlanEditor({ project, isBOD, updateProject }) {
-  const [editing, setEditing] = useState(false);
-  const [priority, setPriority] = useState(project.priority || "normal");
-  const [plannedStart, setPlannedStart] = useState(project.plannedStart || "");
-  const [plannedEnd, setPlannedEnd] = useState(project.plannedEnd || "");
-  useEffect(() => {
-    setPriority(project.priority || "normal"); setPlannedStart(project.plannedStart || ""); setPlannedEnd(project.plannedEnd || ""); setEditing(false);
-  }, [project.id]);
+const PLAN_STATUS_LABEL = { good: "Đúng tiến độ", warn: "Sắp tới hạn", bad: "Trễ tiến độ / điểm nghẽn", none: "Chưa lập kế hoạch", ready: "Đã xong 12 bước", done: "Đã lưu trữ" };
 
-  if (!editing) {
-    return (
-      <div className="pd-payment panel-sub" style={{ marginBottom: 16 }}>
-        <div className="pd-payment-head">
-          <h4>Kế hoạch triển khai tổng</h4>
-          {isBOD && <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}><PenLine size={13} /> Sửa</button>}
-        </div>
-        <div className="pd-payment-figures">
-          <div><span className="dim">Mức ưu tiên</span><strong>{PRIORITY_LABELS[project.priority] || "Trung bình"}</strong></div>
-          <div><span className="dim">Ngày bắt đầu dự kiến</span><strong>{project.plannedStart || "Chưa thiết lập"}</strong></div>
-          <div><span className="dim">Ngày kết thúc dự kiến</span><strong>{project.plannedEnd || "Chưa thiết lập"}</strong></div>
-        </div>
-      </div>
-    );
-  }
+// Tóm tắt kế hoạch trong trang Dự án. Kế hoạch từng bước KHÔNG nhập ở đây nữa —
+// lập nhanh (ngày bắt đầu + quy mô) và chỉnh trên trang "Kế hoạch triển khai".
+function PlanSummaryBlock({ project, isBOD, updateProject, goToTimeline }) {
+  const plan = projectPlan(project);
+  const st = planStatus(project);
   return (
     <div className="pd-payment panel-sub" style={{ marginBottom: 16 }}>
-      <h4 style={{ marginBottom: 10 }}>Sửa kế hoạch triển khai tổng</h4>
-      <div className="form-grid">
-        <div className="form-row"><label>Mức ưu tiên</label>
-          <select className="input" value={priority} onChange={(e) => setPriority(e.target.value)}>
-            {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
-          </select>
+      <div className="pd-payment-head">
+        <h4>Kế hoạch triển khai</h4>
+        <button className="btn btn-outline btn-sm" onClick={() => goToTimeline(project.code)}><Calendar size={13} /> Xem / chỉnh trên Lịch triển khai</button>
+      </div>
+      <div className="pd-payment-figures">
+        <div><span className="dim">Mức ưu tiên</span>
+          {isBOD ? (
+            <select className="input input-sm" value={project.priority || "normal"} onChange={(e) => updateProject(project.id, { priority: e.target.value })}>
+              {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
+            </select>
+          ) : <strong>{PRIORITY_LABELS[project.priority] || "Trung bình"}</strong>}
         </div>
-        <div className="form-row"><label>Ngày bắt đầu dự kiến</label><input type="date" className="input" value={plannedStart} onChange={(e) => setPlannedStart(e.target.value)} /></div>
-        <div className="form-row"><label>Ngày kết thúc dự kiến</label><input type="date" className="input" value={plannedEnd} onChange={(e) => setPlannedEnd(e.target.value)} /></div>
+        <div><span className="dim">Dự kiến bắt đầu → kết thúc</span><strong>{plan ? `${plan.start} → ${plan.end}` : "Chưa lập kế hoạch"}</strong></div>
+        <div><span className="dim">Trạng thái{plan && project.planConfirmed === false ? " (kế hoạch nháp)" : ""}</span><strong>{PLAN_STATUS_LABEL[st.k]}</strong></div>
       </div>
-      <div className="form-actions">
-        <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>Hủy</button>
-        <button className="btn btn-primary btn-sm" onClick={() => { updateProject(project.id, { priority, plannedStart: plannedStart || null, plannedEnd: plannedEnd || null }); setEditing(false); }}>
-          <Check size={14} /> Lưu
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function StagePlanTable({ project, currentRole, isBOD, setStagePlannedDate }) {
-  return (
-    <div className="panel-sub panel" style={{ marginTop: 12 }}>
-      <h4 style={{ marginBottom: 10 }}>Đối chiếu kế hoạch từng bước</h4>
-      <div className="forecast-table-wrap">
-        <table className="forecast-table">
-          <thead><tr><th>#</th><th>Bước</th><th>Ngày dự kiến hoàn thành</th><th>Ngày hoàn thành thực tế</th><th>Chênh lệch</th></tr></thead>
-          <tbody>
-            {PROJECT_STAGES.map((s) => {
-              const st = project.stages[s.id];
-              const canEdit = isBOD || currentRole === s.who;
-              let deltaTxt = "—", deltaClass = "dim";
-              if (st.plannedDate) {
-                if (st.completedAt) {
-                  const d = Math.round((new Date(st.completedAt) - new Date(st.plannedDate)) / 86400000);
-                  deltaTxt = d <= 0 ? `Đúng/sớm ${Math.abs(d)} ngày` : `Trễ ${d} ngày`;
-                  deltaClass = d <= 0 ? "figure-pos" : "figure-debt";
-                } else {
-                  const d = Math.round((new Date(todayISO()) - new Date(st.plannedDate)) / 86400000);
-                  if (d > 0) { deltaTxt = `Đang trễ ${d} ngày`; deltaClass = "figure-debt"; } else { deltaTxt = "Chưa tới hạn"; }
-                }
-              }
-              return (
-                <tr key={s.id}>
-                  <td>{s.id}</td><td>{s.label}</td>
-                  <td>{canEdit
-                    ? <input type="date" className="input input-sm" value={st.plannedDate || ""} onChange={(e) => setStagePlannedDate(s.id, e.target.value)} />
-                    : (st.plannedDate || "—")}</td>
-                  <td>{st.completedAt || "—"}</td>
-                  <td className={deltaClass}>{deltaTxt}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>Kế hoạch từng bước được lập nhanh trên Lịch triển khai (chỉ cần ngày bắt đầu + quy mô, hệ thống tự chia bước) — không phải nhập từng ngày ở đây.</div>
     </div>
   );
 }
@@ -1019,7 +964,7 @@ function WorkItemsBlock({ project, addWorkItem, updateWorkItem, removeWorkItem }
   );
 }
 
-function ProjectDetail({ project, customers, currentRole, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, setStagePlannedDate, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
+function ProjectDetail({ project, customers, currentRole, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, goToTimeline, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
   const [editingInfo, setEditingInfo] = useState(false);
   const isBOD = currentRole === "BOD";
   useEffect(() => setEditingInfo(false), [project.id]);
@@ -1057,16 +1002,13 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
 
       <div className="pd-scope"><h4>Phạm vi công việc</h4><p>{project.scope}</p></div>
 
-      <TimelinePlanEditor project={project} isBOD={isBOD} updateProject={updateProject} />
+      <PlanSummaryBlock project={project} isBOD={isBOD} updateProject={updateProject} goToTimeline={goToTimeline} />
 
       <div className="pd-payment panel-sub">
         <h4 style={{ marginBottom: 10 }}>Tiến độ triển khai</h4>
         <ProgressBar pct={pct} tone={pct >= 80 ? "green" : pct >= 40 ? "amber" : "red"} />
         <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>{pct}% · Bước {project.currentStage}/{PROJECT_FINAL_STAGE_ID}</div>
       </div>
-
-      <StagePlanTable project={project} currentRole={currentRole} isBOD={isBOD}
-        setStagePlannedDate={(stageId, date) => setStagePlannedDate(project.id, stageId, date)} />
 
       <WorkItemsBlock project={project}
         addWorkItem={(title, date) => addWorkItem(project.id, title, date)}
@@ -1099,7 +1041,7 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
   );
 }
 
-function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelectedCode, createProject, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, setStagePlannedDate, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
+function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelectedCode, createProject, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, goToTimeline, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("active");
   const filtered = projects.filter((p) => filter === "all" ? true : p.status === filter);
@@ -1149,7 +1091,7 @@ function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelect
             <ProjectDetail project={selected} customers={customers} currentRole={currentRole} updateProject={updateProject}
               toggleGate={toggleGate} advanceProject={advanceProject} sendBackProject={sendBackProject}
               addRevenueEvent={addRevenueEvent} addCost={addCost} updateCost={updateCost}
-              setStagePlannedDate={setStagePlannedDate} addWorkItem={addWorkItem} updateWorkItem={updateWorkItem}
+              goToTimeline={goToTimeline} addWorkItem={addWorkItem} updateWorkItem={updateWorkItem}
               removeWorkItem={removeWorkItem} archiveProject={archiveProject} />
           ) : <div className="empty-note">Chọn một dự án để xem chi tiết.</div>}
         </div>
@@ -1163,40 +1105,10 @@ function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelect
 /*  (Pipeline → Dự án, cho tới Nghiệm thu) trên cùng 1 timeline chung.       */
 /* ---------------------------------------------------------------------- */
 
-const SCHEDULE_STATUS_LABEL = { good: "Đúng tiến độ", bad: "Trễ tiến độ / điểm nghẽn", neutral: "Chưa lập kế hoạch", done: "Đã hoàn thành" };
-const SCHEDULE_STATUS_CLASS = { good: "risk-green", bad: "risk-red", neutral: "risk-neutral", done: "risk-neutral" };
-
-function PriorityDots({ priority }) {
-  const n = { high: 3, normal: 2, low: 1 }[priority] || 2;
-  return (
-    <span className="priority-dots" title={`Ưu tiên: ${PRIORITY_LABELS[priority] || priority}`}>
-      {[0, 1, 2].map((i) => <i key={i} className={i < n ? "on" : ""} />)}
-    </span>
-  );
-}
-
-function TimelineTab({ projects, goToProject, applyTimelineImport }) {
-  const [statusFilter, setStatusFilter] = useState("active");
-  const [priorityFilter, setPriorityFilter] = useState("all");
+function TimelineTab({ projects, tasks, currentRole, goToProject, updateProject, toggleProjectGate, advanceProject, archiveProject, applyTimelineImport, focusCode }) {
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const fileInputRef = useRef(null);
-
-  let list = projects.filter((p) => statusFilter === "all" ? true : statusFilter === "active" ? p.status !== "closed" : p.status === "closed");
-  if (priorityFilter !== "all") list = list.filter((p) => (p.priority || "normal") === priorityFilter);
-  const prioOrder = { high: 0, normal: 1, low: 2 };
-  list = list.slice().sort((a, b) => {
-    const aArch = a.status === "closed", bArch = b.status === "closed";
-    if (aArch !== bArch) return aArch ? 1 : -1;
-    const sa = projectScheduleStatus(a), sb = projectScheduleStatus(b);
-    if ((sa === "bad") !== (sb === "bad")) return sa === "bad" ? -1 : 1;
-    return (prioOrder[a.priority] ?? 1) - (prioOrder[b.priority] ?? 1);
-  });
-
-  const activeProjects = projects.filter((p) => p.status !== "closed");
-  const atRisk = activeProjects.filter((p) => projectScheduleStatus(p) === "bad");
-  const openWorkItems = activeProjects.reduce((s, p) => s + (p.workItems || []).filter((w) => w.status !== "done").length, 0);
-  const totalContractActive = activeProjects.reduce((s, p) => s + p.contractValue, 0);
 
   const onPickFile = async (e) => {
     const file = e.target.files?.[0];
@@ -1204,27 +1116,27 @@ function TimelineTab({ projects, goToProject, applyTimelineImport }) {
     if (!file) return;
     setImportBusy(true); setImportResult(null);
     try {
-      const { stageUpdates, workItemUpdates, errors } = await parseTimelineImportFile(file, projects);
-      if (stageUpdates.length || workItemUpdates.length) await applyTimelineImport({ stageUpdates, workItemUpdates });
-      setImportResult({ stageCount: stageUpdates.length, workItemCount: workItemUpdates.length, errors });
+      const { stageUpdates, workItemUpdates, planRequests, errors } = await parseTimelineImportFile(file, projects);
+      if (stageUpdates.length || workItemUpdates.length || planRequests.length) await applyTimelineImport({ stageUpdates, workItemUpdates, planRequests });
+      setImportResult({ stageCount: stageUpdates.length, workItemCount: workItemUpdates.length, planCount: planRequests.length, errors });
     } catch (err) {
-      setImportResult({ stageCount: 0, workItemCount: 0, errors: ["Không đọc được file — kiểm tra lại đúng file .xlsx theo mẫu đã được cung cấp."] });
+      setImportResult({ stageCount: 0, workItemCount: 0, planCount: 0, errors: ["Không đọc được file — kiểm tra lại đúng file .xlsx theo mẫu đã được cung cấp."] });
     } finally {
       setImportBusy(false);
     }
   };
 
   return (
-    <div className="tab-pane">
+    <div className="tab-pane tl-pane">
       <div className="pane-header">
         <div>
           <h1>Kế hoạch triển khai</h1>
-          <p className="pane-sub">Theo dõi tiến độ triển khai tất cả dự án <strong>đã ký kết</strong> (Pipeline → Dự án) cho tới Nghiệm thu, trên cùng 1 dashboard — kèm mức ưu tiên, công tác bổ sung từ CĐT và tổng nguồn lực đang triển khai.</p>
+          <p className="pane-sub">Một lịch chung theo ngày cho mọi dự án đang chạy. Chỉ cần <strong>ngày bắt đầu + quy mô</strong> — hệ thống tự chia bước, tự lấy đợt thu tiền, điểm nghẽn, nhiệm vụ, chi phí từ các trang khác.</p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={onPickFile} />
           <button className="btn btn-outline btn-sm" disabled={importBusy} onClick={() => fileInputRef.current?.click()}>
-            <Upload size={13} /> {importBusy ? "Đang nhập..." : "Nhập tiến độ từ Excel"}
+            <Upload size={13} /> {importBusy ? "Đang nhập..." : "Nhập kế hoạch từ Excel"}
           </button>
           <QuickExportButton label="Xuất Excel Kế hoạch" onExport={() => exportTimelineReport(projects)} />
         </div>
@@ -1234,7 +1146,7 @@ function TimelineTab({ projects, goToProject, applyTimelineImport }) {
         <div className="panel" style={{ marginBottom: 16 }}>
           <h3 className="panel-title">Kết quả nhập file</h3>
           <p className="pane-sub" style={{ marginBottom: 6 }}>
-            Đã cập nhật {importResult.stageCount} dòng kế hoạch từng bước, thêm {importResult.workItemCount} công tác bổ sung.
+            Đã tạo {importResult.planCount || 0} kế hoạch nháp (chờ kiểm tra), cập nhật {importResult.stageCount} dòng hạn từng bước, thêm {importResult.workItemCount} công tác bổ sung.
           </p>
           {importResult.errors.length > 0 && (
             <div>
@@ -1245,56 +1157,9 @@ function TimelineTab({ projects, goToProject, applyTimelineImport }) {
         </div>
       )}
 
-      <div className="kpi-row">
-        <KPICard icon={FolderKanban} tone="blue" label="ĐANG TRIỂN KHAI" value={activeProjects.length} sub={`${projects.length - activeProjects.length} đã lưu trữ`} />
-        <KPICard icon={Wallet} tone="blue" label="TỔNG GIÁ TRỊ HĐ ĐANG CHẠY" value={formatCompactVND(totalContractActive)} sub="Tổng nguồn lực đang triển khai" />
-        <KPICard icon={AlertTriangle} tone="red" label="TRỄ TIẾN ĐỘ / ĐIỂM NGHẼN" value={atRisk.length} sub="Cần xử lý ngay" />
-        <KPICard icon={Flag} tone="amber" label="CÔNG TÁC BỔ SUNG CHƯA XONG" value={openWorkItems} sub="Yêu cầu phát sinh từ CĐT" />
-      </div>
-
-      <div className="filter-tabs" style={{ flexWrap: "wrap" }}>
-        {[["active", "Đang triển khai"], ["archived", "Đã lưu trữ"], ["all", "Tất cả"]].map(([k, l]) => (
-          <button key={k} className={`chip ${statusFilter === k ? "chip-active" : ""}`} onClick={() => setStatusFilter(k)}>{l}</button>
-        ))}
-        <span style={{ width: 10 }} />
-        {[["all", "Mọi ưu tiên"], ["high", "Cao"], ["normal", "Trung bình"], ["low", "Thấp"]].map(([k, l]) => (
-          <button key={k} className={`chip ${priorityFilter === k ? "chip-active" : ""}`} onClick={() => setPriorityFilter(k)}>{l}</button>
-        ))}
-      </div>
-
-      <div className="panel" style={{ padding: 0 }}>
-        <div className="forecast-table-wrap">
-          <table className="forecast-table">
-            <thead><tr>
-              <th>Dự án</th><th>Ưu tiên</th><th>Dự kiến bắt đầu → kết thúc</th><th>Giai đoạn hiện tại</th><th>% tiến độ</th><th>Trạng thái</th><th>Công tác bổ sung</th>
-            </tr></thead>
-            <tbody>
-              {list.map((p) => {
-                const stg = PROJECT_STAGES.find((s) => s.id === p.currentStage);
-                const pct = projectStagePct(p);
-                const status = projectScheduleStatus(p);
-                const openWi = (p.workItems || []).filter((w) => w.status !== "done").length;
-                return (
-                  <tr key={p.id} className="attention-row-clickable" onClick={() => goToProject(p.code)}>
-                    <td>
-                      <div style={{ fontWeight: 600 }}>{p.code} · {p.name}</div>
-                      <div className="dim" style={{ fontSize: 11 }}>{p.customerName}</div>
-                    </td>
-                    <td><PriorityDots priority={p.priority || "normal"} /></td>
-                    <td className="dim" style={{ fontSize: 12 }}>{p.plannedStart || "—"} → {p.plannedEnd || "—"}</td>
-                    <td>Bước {p.currentStage}/{PROJECT_FINAL_STAGE_ID} · {stg?.label}</td>
-                    <td style={{ minWidth: 100 }}><ProgressBar pct={pct} tone={pct >= 80 ? "green" : pct >= 40 ? "amber" : "red"} /></td>
-                    <td><span className={`risk-badge ${SCHEDULE_STATUS_CLASS[status]}`}>{SCHEDULE_STATUS_LABEL[status]}</span></td>
-                    <td>{openWi > 0 ? <span className="risk-badge risk-red">{openWi} chưa xong</span> : <span className="dim">—</span>}</td>
-                  </tr>
-                );
-              })}
-              {list.length === 0 && <tr><td colSpan={7} className="empty-note">Không có dự án nào khớp bộ lọc.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <p className="dim" style={{ fontSize: 12, marginTop: 10 }}>Bấm vào 1 dự án để xem/điều chỉnh kế hoạch, công tác bổ sung, chi phí phát sinh và đánh dấu hoàn thành → lưu trữ.</p>
+      <TimelineBoard projects={projects} tasks={tasks} currentRole={currentRole} updateProject={updateProject}
+        toggleProjectGate={toggleProjectGate} advanceProject={advanceProject} archiveProject={archiveProject}
+        goToProject={goToProject} focusCode={focusCode} />
     </div>
   );
 }
@@ -2504,6 +2369,7 @@ export default function App() {
   const [forecast, setForecast] = useState([]);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(null);
   const [selectedProjectCode, setSelectedProjectCode] = useState(null);
+  const [timelineFocus, setTimelineFocus] = useState(null);
   const [bodUsers, setBodUsers] = useState([]); // danh sách tài khoản BOD (mỗi thành viên BOD 1 tài khoản riêng)
 
   /* ---- đăng nhập (Firebase Auth) ---- */
@@ -2684,6 +2550,7 @@ export default function App() {
     const p = projects.find((x) => x.id === id);
     if (!p) return;
     let updated = advanceFlow(p, PROJECT_STAGES, currentRole);
+    updated = replanAfterAdvance(p, updated); // hoàn thành trễ hơn hạn → chia lại các bước còn lại tới ngày kết thúc
     if (updated.currentStage === PROJECT_FINAL_STAGE_ID && updated.stages[PROJECT_FINAL_STAGE_ID].state === "done") {
       updated = { ...updated, status: "closed" };
     }
@@ -2723,11 +2590,6 @@ export default function App() {
 
   /* ---- Kế hoạch triển khai: ngày dự kiến từng bước, công tác bổ sung,
    * đánh dấu hoàn thành → lưu trữ, nhập hàng loạt từ Excel ---- */
-  const setStagePlannedDate = useCallback((id, stageId, date) => {
-    const p = projects.find((x) => x.id === id);
-    if (!p) return;
-    saveDoc("projects", id, { ...p, stages: { ...p.stages, [stageId]: { ...p.stages[stageId], plannedDate: date || null } } }).catch(onWriteError);
-  }, [projects]);
   const addWorkItem = useCallback((id, title, date) => {
     const p = projects.find((x) => x.id === id);
     if (!p) return;
@@ -2767,9 +2629,17 @@ export default function App() {
   }, [projects, isBOD]);
   // Áp dụng kết quả đọc file Excel "Nhập tiến độ" — gộp các dòng theo từng dự
   // án rồi ghi 1 lần/dự án (tránh đè lẫn nhau khi nhiều dòng cùng 1 mã).
-  const applyTimelineImport = useCallback(({ stageUpdates, workItemUpdates }) => {
+  const applyTimelineImport = useCallback(({ stageUpdates, workItemUpdates, planRequests = [] }) => {
     const byCode = new Map(projects.map((p) => [p.code, p]));
     const patches = new Map();
+    // "Ke hoach nhanh": Mã DA + ngày bắt đầu + (ngày kết thúc | quy mô) → kế hoạch NHÁP tự chia 12 bước
+    planRequests.forEach(({ code, start, end, days }) => {
+      const p = byCode.get(code);
+      if (!p) return;
+      const plan = suggestPlan(p, { start, end, days: days || suggestPlanDays(p.contractValue) });
+      const entry = patches.get(code) || { stages: { ...p.stages }, workItems: [...(p.workItems || [])] };
+      patches.set(code, { ...entry, ...planToPatch({ ...p, stages: entry.stages }, plan, false) });
+    });
     stageUpdates.forEach(({ code, stageId, plannedDate }) => {
       const p = byCode.get(code);
       if (!p) return;
@@ -2904,6 +2774,7 @@ export default function App() {
 
   /* ---- navigation ---- */
   const goToProject = useCallback((code) => { setSelectedProjectCode(code); setTab("projects"); }, []);
+  const goToTimeline = useCallback((code) => { setTimelineFocus(code); setTab("timeline"); }, []);
   const goToOpportunity = useCallback((id) => { setSelectedOpportunityId(id); setTab("opportunities"); }, []);
   const goToEmployees = useCallback(() => setTab("employees"), []);
 
@@ -2969,11 +2840,13 @@ export default function App() {
             selectedCode={selectedProjectCode} setSelectedCode={setSelectedProjectCode} createProject={createProject}
             updateProject={updateProject} toggleGate={toggleProjectGate} advanceProject={advanceProject}
             sendBackProject={sendBackProject} addRevenueEvent={addRevenueEvent} addCost={addCost} updateCost={updateCost}
-            setStagePlannedDate={setStagePlannedDate} addWorkItem={addWorkItem} updateWorkItem={updateWorkItem}
+            goToTimeline={goToTimeline} addWorkItem={addWorkItem} updateWorkItem={updateWorkItem}
             removeWorkItem={removeWorkItem} archiveProject={archiveProject} />
         )}
         {tab === "timeline" && (
-          <TimelineTab projects={projects} goToProject={goToProject} applyTimelineImport={applyTimelineImport} />
+          <TimelineTab projects={projects} tasks={tasks} currentRole={currentRole} goToProject={goToProject}
+            updateProject={updateProject} toggleProjectGate={toggleProjectGate} advanceProject={advanceProject}
+            archiveProject={archiveProject} applyTimelineImport={applyTimelineImport} focusCode={timelineFocus} />
         )}
         {tab === "ar" && (
           <ArTab projects={projects} isBOD={isBOD} goToProject={goToProject}
