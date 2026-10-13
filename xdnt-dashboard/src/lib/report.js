@@ -11,9 +11,9 @@
 
 import {
   PROJECT_STAGES, OPP_STAGES, PROJECT_ACCEPTANCE_STAGE_ID,
-  projectCollected, projectAR, projectStagePct, projectRiskLevel, projectScheduleStatus,
+  projectCollected, projectAR, projectStagePct, projectRiskLevel,
   milestoneStatus, milestoneCumPct, isTaskOverdue, employeeSummary, addMonths, todayISO,
-  PRIORITY_LABELS,
+  PRIORITY_LABELS, projectPlan, planStatus, planProgressPct, openNotes, NOTE_LABELS,
 } from "../data/seed";
 
 /* ---------------------------------------------------------------------- */
@@ -159,21 +159,37 @@ export function buildProjectBottleneckRows(projects) {
   return [header, ...rows];
 }
 
-const SCHEDULE_STATUS_LABEL = { good: "Đúng tiến độ", bad: "Trễ tiến độ / điểm nghẽn", neutral: "Chưa lập kế hoạch", done: "Đã hoàn thành (lưu trữ)" };
+const SCHEDULE_STATUS_LABEL = { good: "Đúng tiến độ", warn: "Sắp tới hạn", bad: "Trễ tiến độ / điểm nghẽn", none: "Chưa lập kế hoạch", ready: "Đã xong 12 bước", done: "Đã hoàn thành (lưu trữ)" };
 
 /** Kế hoạch triển khai — 1 dòng / dự án (chỉ dự án đang triển khai, dùng cho
  * báo cáo nhanh BOD hoặc trao đổi giữa các phòng ban). */
 export function buildTimelineRows(projects) {
-  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Ưu tiên", "Ngày bắt đầu dự kiến", "Ngày kết thúc dự kiến", "Bước hiện tại", "Tên bước", "% tiến độ", "Trạng thái tiến độ", "Số công tác bổ sung chưa xong", "Giá trị hợp đồng (₫)"];
+  const header = ["Mã dự án", "Tên dự án", "Khách hàng", "Ưu tiên", "Ngày bắt đầu dự kiến", "Ngày kết thúc dự kiến", "Bước hiện tại", "Tên bước", "% tiến độ", "Trạng thái tiến độ", "Kế hoạch", "Tắc nghẽn / cần hỗ trợ đang mở", "Số công tác bổ sung chưa xong", "Giá trị hợp đồng (₫)"];
   const rows = projects.filter((p) => p.status !== "closed").map((p) => {
     const stg = PROJECT_STAGES.find((s) => s.id === p.currentStage);
     const openWorkItems = (p.workItems || []).filter((w) => w.status !== "done").length;
+    const plan = projectPlan(p);
+    const blocking = openNotes(p).filter((n) => n.type !== "note").length;
     return [
       p.code, p.name, p.customerName, PRIORITY_LABELS[p.priority] || p.priority,
-      p.plannedStart || "", p.plannedEnd || "", p.currentStage, stg?.label || "",
-      projectStagePct(p), SCHEDULE_STATUS_LABEL[projectScheduleStatus(p)] || "",
-      openWorkItems, p.contractValue,
+      plan ? plan.start : (p.plannedStart || ""), plan ? plan.end : (p.plannedEnd || ""), p.currentStage, stg?.label || "",
+      planProgressPct(p), SCHEDULE_STATUS_LABEL[planStatus(p).k] || "",
+      plan ? (p.planConfirmed === false ? "Nháp" : "Đã xác nhận") : "Chưa có",
+      blocking, openWorkItems, p.contractValue,
     ];
+  });
+  return [header, ...rows];
+}
+
+/** Ghi chú / tắc nghẽn / cần hỗ trợ theo bước (nhất là Manufacturing, Construction) — 1 dòng / ghi chú. */
+export function buildNoteRows(projects) {
+  const header = ["Mã dự án", "Tên dự án", "Bước số", "Tên bước", "Loại", "Nội dung", "Cần ai hỗ trợ", "Ngày ghi", "Trạng thái"];
+  const rows = [];
+  projects.forEach((p) => {
+    (p.notes || []).forEach((n) => {
+      const stg = PROJECT_STAGES.find((s) => s.id === n.stage);
+      rows.push([p.code, p.name, n.stage, stg?.label || "", NOTE_LABELS[n.type] || n.type, n.text, n.need || "", n.date, n.resolved ? "Đã xử lý" : "Đang mở"]);
+    });
   });
   return [header, ...rows];
 }
@@ -402,6 +418,7 @@ export async function exportTimelineReport(projects) {
     ["Ke hoach tong hop", buildTimelineRows(projects)],
     ["Doi chieu tung buoc", buildStagePlanRows(projects)],
     ["Cong tac bo sung", buildWorkItemRows(projects)],
+    ["Ghi chu thi cong", buildNoteRows(projects)],
     ["Chi phi phat sinh", buildCostBreakdownRows(projects)],
     ["Du an da hoan thanh", buildCompletedProjectsHandoffRows(projects)],
   ]);
