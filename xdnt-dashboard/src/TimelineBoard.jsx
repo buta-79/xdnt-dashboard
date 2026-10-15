@@ -5,9 +5,12 @@ import {
   NOTE_LABELS, NOTE_SYMBOL, NOTE_NEED_OPTIONS, NOTE_PRESETS, makeNote, openNotes,
   PLAN_STAGE_COUNT, PLAN_PHASES, PLAN_SIZE_OPTIONS, suggestPlanDays,
   projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, setStageSkip, setPlanStart, planStatus, planProgressPct,
+  stepStart, stepDays, stepEndForDays, stepIsOwnStart, setStageStart, planOverlaps,
+  schedItems, schedPct, schedIsLate,
   addDaysISO, diffDays,
 } from "./data/seed";
 import { JobsBoard, ProjectJobs, JobRow, QuickAdd, jobOps } from "./JobsBoard";
+import SiteSchedule from "./SiteSchedule";
 
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI CHUNG (Gantt) — thay cho bảng "Kế hoạch triển khai" cũ   */
@@ -74,12 +77,37 @@ function CommitInput({ type, value, onCommit, className, min }) {
 function ganttRange(rows, today) {
   let mn = d2n(today) - 14, mx = d2n(today) + 30;
   rows.forEach(({ p, plan, st }) => {
-    mn = Math.min(mn, d2n(plan ? plan.start : (p.plannedStart || p.createdAt || today)));
+    mn = Math.min(mn, d2n(plan ? (plan.minStart || plan.start) : (p.plannedStart || p.createdAt || today)));
     if (plan) mx = Math.max(mx, d2n(plan.end) + (st.late || 0));
     (p.paymentMilestones || []).forEach((m) => { if (m.plannedDate) mx = Math.max(mx, d2n(m.plannedDate)); });
   });
   mn -= 5; mx += 14; mn -= (mn + 3) % 7; // lùi về thứ Hai
   return { mn, mx };
+}
+
+// Các giai đoạn của 1 kế hoạch + làn vẽ. Giai đoạn chạy chồng lên nhau được xếp xuống làn dưới (song song).
+function phaseLayout(plan) {
+  const sk = plan.skips || [];
+  const list = [];
+  PLAN_PHASES.forEach((ph, k) => {
+    const idx = [];
+    for (let i = ph.from - 1; i <= ph.to - 1; i++) if (!sk[i]) idx.push(i);
+    if (!idx.length) return; // cả giai đoạn được bỏ qua → không vẽ
+    const a = idx.map((i) => stepStart(plan, i)).reduce((m, x) => (x < m ? x : m));
+    const b = idx.map((i) => plan.ends[i]).reduce((m, x) => (x > m ? x : m));
+    const own = idx.some((i) => stepIsOwnStart(plan, i));
+    const w0 = d2n(b) - d2n(a) + (own ? 1 : 0);
+    if (w0 <= 0) return;
+    list.push({ ph, k, a, b, w0 });
+  });
+  const laneEnd = [];
+  [...list].sort((x, y) => d2n(x.a) - d2n(y.a) || x.k - y.k).forEach((it) => {
+    let L = laneEnd.findIndex((e) => d2n(it.a) >= e);
+    if (L < 0) { L = laneEnd.length; laneEnd.push(0); }
+    laneEnd[L] = d2n(it.a) + it.w0;
+    it.lane = L;
+  });
+  return { items: list, lanes: Math.max(1, laneEnd.length) };
 }
 
 function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, today, tasksByCode, scrollRef }) {
@@ -126,34 +154,37 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
           const openBn = (p.bottlenecks || []).filter((b) => !b.resolvedAt);
           const pct = planProgressPct(p, today);
           const stage = PROJECT_STAGES.find((s) => s.id === cur);
+          const lay = plan ? phaseLayout(plan) : null;     // các giai đoạn + làn (làn 2, 3… = chạy song song)
+          const LH = 24, extra = lay ? (lay.lanes - 1) * LH : 0;
+          const curLane = lay ? (lay.items.find((x) => x.ph.from <= cur && cur <= x.ph.to)?.lane || 0) : 0;
           return (
-            <div key={p.id} className={`tl-g-row ${p.id === selId ? "sel" : ""}`} onClick={() => onSelect(p.id)}>
+            <div key={p.id} className={`tl-g-row ${p.id === selId ? "sel" : ""}`} style={extra ? { height: 84 + extra } : undefined} onClick={() => onSelect(p.id)}>
               <div className="tl-g-name">
                 <div className="tl-gn1"><b>{p.code.replace("TDDB-", "")}</b><Dots priority={p.priority} /><StatusPill st={st} /></div>
                 <div className="tl-gn2" title={p.name}>{p.name}</div>
                 <div className="tl-gn3">
                   Bước {cur}/{PROJECT_STAGES.length} · {stage?.label} · {pct}%
                   {plan && p.planConfirmed === false ? " · KH nháp" : ""}
+                  {lay && lay.lanes > 1 && <> · <b className="par">⇉ song song</b></>}
                   {nb > 0 && <> · <b className="r">!{nb}</b></>}
                   {nh > 0 && <> · <b className="a">+{nh}</b></>}
                 </div>
               </div>
               <div className="tl-g-track" style={{ width: W }}>
-                {plan ? PLAN_PHASES.map((ph, k) => {
-                  const a = k === 0 ? plan.start : plan.ends[PLAN_PHASES[k - 1].to - 1], b = plan.ends[ph.to - 1];
-                  if (d2n(b) === d2n(a)) return null; // cả giai đoạn được bỏ qua → không vẽ
-                  const left = (d2n(a) - mn) * dw, w = Math.max(2, (d2n(b) - d2n(a)) * dw);
+                {plan ? lay.items.map(({ ph, k, a, b, lane, w0 }) => {
                   const state = ph.to < cur ? "done" : (ph.from <= cur && cur <= ph.to) ? "cur" : "fut";
+                  const left = (d2n(a) - mn) * dw, w = Math.max(2, w0 * dw);
                   const label = w > 78 ? ph.name : (w > 30 ? ph.name.split(" ")[0] : "");
-                  const fillw = state === "cur" ? Math.max(0, Math.min(d2n(b) - d2n(a), tn - d2n(a))) * dw : 0;
+                  const fillw = state === "cur" ? Math.max(0, Math.min(w0, tn - d2n(a))) * dw : 0;
+                  const top = 26 + lane * LH;
                   return (
                     <React.Fragment key={k}>
-                      <div className={`tl-seg-b ${state}`} style={{ left, width: w }} title={`${ph.name}: ${fd(a)} → ${fd(b)}`}>
+                      <div className={`tl-seg-b ${state}`} style={{ left, width: w, top }} title={`${ph.name}: ${fd(a)} → ${fd(b)}${lane > 0 ? " (chạy song song)" : ""}`}>
                         {state === "cur" && <span className="fill" style={{ width: fillw }} />}
                         <span style={{ position: "relative", color: state === "cur" && fillw > w * 0.5 ? "#fff" : undefined }}>{label}</span>
                       </div>
                       {ph.to >= cur && (
-                        <div className="tl-hd" style={{ left: (d2n(b) - mn) * dw }}
+                        <div className="tl-hd" style={{ left: (d2n(b) - mn) * dw, top: top - 4 }}
                           title={`Kéo để dời mốc “${ph.name}” (các bước sau dời theo)`}
                           onClick={(e) => e.stopPropagation()}
                           onPointerDown={(e) => onHandleDown(e, p, k)} />
@@ -169,8 +200,8 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
                   const cb = plan.ends[Math.min(cur, PLAN_STAGE_COUNT) - 1];
                   return (
                     <>
-                      <div className="tl-over" style={{ left: (d2n(cb) - mn) * dw, width: (tn - d2n(cb)) * dw }} title={`Bước hiện tại đã quá hạn ${st.late} ngày`}>{st.late}n</div>
-                      <div className="tl-tail" style={{ left: (d2n(plan.end) - mn) * dw, width: st.late * dw }} title={`Dự báo hoàn thành ${fdy(st.forecastEnd)}`}>+{st.late}n</div>
+                      <div className="tl-over" style={{ left: (d2n(cb) - mn) * dw, width: (tn - d2n(cb)) * dw, top: 26 + curLane * LH }} title={`Bước hiện tại đã quá hạn ${st.late} ngày`}>{st.late}n</div>
+                      <div className="tl-tail" style={{ left: (d2n(plan.end) - mn) * dw, width: st.late * dw, top: 26 + curLane * LH }} title={`Dự báo hoàn thành ${fdy(st.forecastEnd)}`}>+{st.late}n</div>
                     </>
                   );
                 })()}
@@ -184,16 +215,16 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
                 ))}
                 {layers.tk && myTasks.map((t) => {
                   const od = diffDays(t.dueDate, today) > 0;
-                  return <span key={t.id} className={`tl-mk tk ${od ? "tl-tk-od" : "tl-tk-ok"}`} style={{ left: (d2n(t.dueDate) - mn) * dw }} title={`Hạn: ${t.title} · ${fdy(t.dueDate)}${od ? " (quá hạn)" : ""}`}>●</span>;
+                  return <span key={t.id} className={`tl-mk tk ${od ? "tl-tk-od" : "tl-tk-ok"}`} style={{ left: (d2n(t.dueDate) - mn) * dw, top: 69 + extra }} title={`Hạn: ${t.title} · ${fdy(t.dueDate)}${od ? " (quá hạn)" : ""}`}>●</span>;
                 })}
                 {layers.nt && plan && (() => {
                   const cnt = {};
                   return nOpen.map((n) => {
-                    const a = n.stage > 1 ? plan.ends[n.stage - 2] : plan.start, b = plan.ends[n.stage - 1];
+                    const a = stepStart(plan, n.stage - 1), b = plan.ends[n.stage - 1];
                     const dn = Math.max(d2n(a), Math.min(d2n(b), d2n(n.date)));
                     cnt[n.stage] = (cnt[n.stage] || 0) + 1;
                     return (
-                      <span key={n.id} className="tl-mk nt" style={{ left: (dn - mn) * dw + (cnt[n.stage] - 1) * 17 }}
+                      <span key={n.id} className="tl-mk nt" style={{ left: (dn - mn) * dw + (cnt[n.stage] - 1) * 17, top: 52 + extra }}
                         title={`${NOTE_LABELS[n.type]} · bước ${n.stage} ${stageLabel(n.stage)}: ${n.text}${n.need ? " (cần " + n.need + ")" : ""}`}>
                         <i className={`tl-nm ${n.type}`}>{NOTE_SYMBOL[n.type]}</i>
                       </span>
@@ -225,11 +256,12 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
 /*  BƯỚC KIỂM TRA KẾ HOẠCH                                                 */
 /* ====================================================================== */
 
-function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSetStart, onConfirm, onClose, onReplan, reviewRef }) {
+function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSetStart, onSetStageStart, onOpenSite, onConfirm, onClose, onReplan, reviewRef }) {
   const cur = p.currentStage;
-  const total = Math.max(1, diffDays(plan.start, plan.end));
+  const total = Math.max(1, diffDays(plan.minStart || plan.start, plan.end));
+  const overlaps = planOverlaps(plan);
   const bar = PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).map((s, i) => {
-    const a = i ? plan.ends[i - 1] : plan.start, dur = diffDays(a, plan.ends[i]);
+    const dur = stepDays(plan, i);
     const c = i + 1 < cur ? "d" : i + 1 === cur ? "c" : "f";
     if (dur === 0) return null; // bước bỏ qua: không chiếm thời gian
     return <div key={s.id} className={c} style={{ flex: `${dur} 1 0` }} title={`${s.id}. ${s.label}: ${dur} ngày`}>{s.id}</div>;
@@ -250,7 +282,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSet
       </div>
       <div className="tl-panel-b">
         <div className="tl-row2" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-          <span>{fdy(plan.start)} → <b>{fdy(plan.end)}</b> · tổng <b>{diffDays(plan.start, plan.end)} ngày</b></span>
+          <span>{fdy(plan.minStart || plan.start)} → <b>{fdy(plan.end)}</b> · tổng <b>{diffDays(plan.minStart || plan.start, plan.end)} ngày</b></span>
           <label className="tl-note" style={{ cursor: "pointer" }}>
             <input type="checkbox" checked={cascade} onChange={(e) => setCascade(e.target.checked)} /> Đổi hạn một bước thì dời các bước sau theo
           </label>
@@ -258,36 +290,47 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSet
         <div className="tl-rv-bar" title="Độ dài các bước theo tỷ lệ">{bar}</div>
         <div className="tl-tbl-wrap">
           <table>
-            <thead><tr><th></th><th>Bước</th><th>Phụ trách</th><th>Bắt đầu</th><th>Hạn kết thúc</th><th>Số ngày</th><th>Tỷ trọng</th><th>Ghi chú mở</th></tr></thead>
+            <thead><tr><th></th><th>Bước</th><th>Phụ trách</th><th>Bắt đầu</th><th>Hạn kết thúc</th><th>Số ngày</th><th>Tỷ trọng</th><th>Song song / ghi chú</th></tr></thead>
             <tbody>
               {PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).map((s, i) => {
-                const a = i ? plan.ends[i - 1] : plan.start, b = plan.ends[i], dur = diffDays(a, b);
+                const a = stepStart(plan, i), b = plan.ends[i], dur = stepDays(plan, i);
                 const done = p.stages[s.id]?.state === "done";
                 const skipped = !!(plan.skips && plan.skips[i]);
-                const firstActive = i === firstIdx && !done; // bước làm việc đầu tiên: cho chọn ngày bắt đầu (kể cả ngày đã qua)
+                const dv = !done && !skipped ? plan.derived[i] : null; // bước lấy ngày từ "Tiến độ thi công"
+                const own = stepIsOwnStart(plan, i);
+                const par = overlaps.find((o) => o.idx === i);
+                const firstActive = i === firstIdx && !done;
                 const nts = notes.filter((x) => x.stage === s.id);
+                const minEnd = own || dv ? a : addDaysISO(a, 1);
                 return (
                   <tr key={s.id} className={skipped ? "rv-skip" : done ? "rv-done" : s.id === cur ? "rv-cur" : ""}>
                     <td>{done ? "✓" : s.id === cur ? "▶" : s.id}</td>
                     <td><b>{s.label}</b>{(s.id === 6 || s.id === 7) && <> <span className="tl-pill warn" style={{ fontSize: 10 }}>trọng tâm</span></>}{skipped && <> <span className="tl-pill none" style={{ fontSize: 10 }}>bỏ qua</span></>}</td>
                     <td>{s.who}</td>
-                    <td className="tl-num">{skipped ? "—" : firstActive
-                      ? <CommitInput type="date" className="input input-sm" value={a} onCommit={(v) => goodDate(v) && onSetStart(v)} />
-                      : fd(a)}</td>
+                    <td className="tl-num">{skipped ? "—" : done || dv ? fd(a)
+                      : firstActive
+                        ? <CommitInput type="date" className="input input-sm" value={a} onCommit={(v) => goodDate(v) && onSetStart(v)} />
+                        : <span className="rv-own"><CommitInput type="date" className="input input-sm" value={a} onCommit={(v) => goodDate(v) && onSetStageStart(i, v)} />
+                          {own && <button className="rv-reset" title="Quay về: bắt đầu ngay khi bước trước kết thúc" onClick={() => onSetStageStart(i, null)}>↺</button>}</span>}</td>
                     <td>{done ? <span className="tl-num">{skipped ? "bỏ qua" : `${fd(b)} (xong)`}</span>
+                      : dv ? <span className="tl-num">{fd(b)}</span>
                       : skipped ? <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && diffDays(a, v) >= 1 && onSetSkip(i, false, diffDays(a, v))} />
-                      : <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && onEditEnd(i, v)} />}</td>
-                    <td>{done ? <span className="tl-num">{skipped ? 0 : dur}</span>
+                      : <CommitInput type="date" className="input input-sm" value={b} min={minEnd} onCommit={(v) => goodDate(v) && onEditEnd(i, v)} />}</td>
+                    <td>{done || dv ? <span className="tl-num">{skipped ? 0 : dur}</span>
                       : <CommitInput type="number" min="0" className="input input-sm dur" value={dur}
                           onCommit={(v) => {
                             const n = Math.round(+v);
                             if (!(n >= 0)) return;
                             if (n === 0) { if (!skipped) onSetSkip(i, true, 0); }
                             else if (skipped) onSetSkip(i, false, n);
-                            else onEditEnd(i, addDaysISO(a, n));
+                            else onEditEnd(i, stepEndForDays(plan, i, n));
                           }} />}</td>
                     <td className="tl-num">{Math.round((dur / total) * 100)}%</td>
-                    <td>{nts.map((x) => <i key={x.id} className={`tl-nm ${x.type}`} title={`${NOTE_LABELS[x.type]}: ${x.text}`} style={{ marginRight: 3 }}>{NOTE_SYMBOL[x.type]}</i>)}</td>
+                    <td>
+                      {dv && <span className="tl-pill warn rv-chip" title="Ngày bắt đầu, kết thúc và % lấy từ bảng Tiến độ thi công — sửa ở đó" onClick={onOpenSite} style={{ cursor: "pointer" }}>lấy từ Tiến độ thi công · {dv.pc}%</span>}
+                      {par && <span className="tl-pill ready rv-chip" title="Bước này bắt đầu khi bước trước chưa kết thúc">song song với bước {par.with[par.with.length - 1] + 1}</span>}
+                      {nts.map((x) => <i key={x.id} className={`tl-nm ${x.type}`} title={`${NOTE_LABELS[x.type]}: ${x.text}`} style={{ marginRight: 3 }}>{NOTE_SYMBOL[x.type]}</i>)}
+                    </td>
                   </tr>
                 );
               })}
@@ -302,7 +345,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSet
           <button className="btn btn-primary" onClick={onConfirm}>{p.planConfirmed === false ? "Xác nhận kế hoạch" : "Lưu & đóng"}</button>
           <button className="btn btn-outline" onClick={onClose}>Đóng</button>
           <button className="btn btn-ghost" onClick={onReplan}>Lập lại từ đầu…</button>
-          <span className="tl-note">Bước đã xong được khóa; sửa hạn hoặc số ngày đều được (lưu khi rời ô hoặc nhấn Enter). <b>Nhập 0 ngày = bỏ qua bước đó</b>; nhập lại số ngày ≥ 1 để bật lại. <b>Ngày bắt đầu</b> của bước đầu tiên chọn được cả ngày đã qua (dự án làm gấp, nhập bù thông tin sau).</span>
+          <span className="tl-note">Bước đã xong được khóa; sửa hạn hoặc số ngày đều được (lưu khi rời ô hoặc nhấn Enter). <b>Nhập 0 ngày = bỏ qua bước đó</b>; nhập lại số ngày ≥ 1 để bật lại. <b>Mỗi bước có ngày bắt đầu riêng</b> — đặt ngày bắt đầu sớm hơn hạn của bước trước thì hai bước <b>chạy song song</b> (nhấn ↺ để quay về “bắt đầu khi bước trước xong”). Ngày bắt đầu của bước đầu tiên chọn được cả ngày đã qua. Các bước có nhãn <b>lấy từ Tiến độ thi công</b> tự cập nhật theo bảng hạng mục, không dời theo các bước khác.</span>
         </div>
       </div>
     </div>
@@ -537,8 +580,9 @@ export default function TimelineBoard({
   const today = todayISO();
   const isBOD = currentRole === "BOD";
   const [view, setView] = useState("active");
-  const [mode, setMode] = useState("gantt"); // gantt | jobs
+  const [mode, setMode] = useState("gantt"); // gantt | jobs | site
   const [jobsFocus, setJobsFocus] = useState(null);
+  const [siteFocus, setSiteFocus] = useState(null);
   const [openAtt, setOpenAtt] = useState(null); // dòng "Cần xử lý" đang mở ô thêm công tác
   const [sort, setSort] = useState("risk");
   const [zoom, setZoom] = useState("month");
@@ -606,7 +650,7 @@ export default function TimelineBoard({
     const el = scrollRef.current;
     if (el) el.scrollLeft = Math.max(0, (d2n(today) - meta.mn) * DAYW[zoom] - 200);
   };
-  useEffect(() => { scrollToToday(); }, [zoom, showG]);
+  useEffect(() => { scrollToToday(); }, [zoom, showG, mode]);
   const reviewReady = !!(reviewRow && reviewRow.plan);
   useEffect(() => {
     if (reviewId && reviewReady && reviewRef.current) reviewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -630,6 +674,7 @@ export default function TimelineBoard({
   const drafts = activeRows.filter((r) => r.plan && r.p.planConfirmed === false);
   const totalValue = act.reduce((s, p) => s + (p.contractValue || 0), 0);
   const lateJobsTotal = act.reduce((s, p) => s + (p.jobs || []).filter((j) => !j.done && j.due < today).length, 0);
+  const lateSiteTotal = act.reduce((s, p) => s + schedItems(p).filter((i) => schedIsLate(i, today)).length, 0);
 
   /* ---- hành động ---- */
   const sel = selRow?.p;
@@ -714,6 +759,8 @@ export default function TimelineBoard({
     });
     const lateJobs = (p.jobs || []).filter((j) => !j.done && j.due < today);
     if (lateJobs.length) attention.push({ sev: 2.2, k: "bad", id: p.id, t: `${c} · ${lateJobs.length} việc triển khai trễ hạn`, sub: lateJobs.slice(0, 2).map((j) => j.text).join(" · ") });
+    const lateSite = schedItems(p).filter((i) => schedIsLate(i, today));
+    if (lateSite.length) attention.push({ sev: 2.1, k: "bad", id: p.id, t: `${c} · ${lateSite.length} hạng mục thi công trễ hạn`, sub: lateSite.slice(0, 2).map((i) => `${i.t} (${i.pc}%)`).join(" · ") });
     const starJobs = (p.jobs || []).filter((j) => !j.done && j.star && j.due >= today && j.date <= today);
     if (starJobs.length) attention.push({ sev: 2.8, k: "warn", id: p.id, t: `${c} · ★ ${starJobs.length} việc quan trọng hôm nay`, sub: starJobs.slice(0, 2).map((j) => j.text).join(" · ") });
     openNotes(p).filter((n) => n.type !== "note").forEach((n) => attention.push({ sev: 2.5, k: n.type === "block" ? "bad" : "warn", id: p.id, stage: n.stage, t: `${c} · ${NOTE_LABELS[n.type]} (bước ${n.stage} ${stageLabel(n.stage)})`, sub: `${n.text}${n.need ? " · cần " + n.need : ""}` }));
@@ -729,10 +776,14 @@ export default function TimelineBoard({
       <div className="tl-modebar">
         <div className="tl-seg">
           <button className={mode === "gantt" ? "on" : ""} onClick={() => setMode("gantt")}>Lịch triển khai</button>
+          <button className={mode === "site" ? "on" : ""} onClick={() => { setSiteFocus(selRow && selRow.p.status !== "closed" ? selRow.p.id : null); setMode("site"); }}>Tiến độ thi công{lateSiteTotal > 0 ? ` · ${lateSiteTotal} trễ` : ""}</button>
           <button className={mode === "jobs" ? "on" : ""} onClick={() => { setJobsFocus(null); setMode("jobs"); }}>Việc hằng ngày{lateJobsTotal > 0 ? ` · ${lateJobsTotal} trễ` : ""}</button>
         </div>
       </div>
-      {mode === "jobs" ? (
+      {mode === "site" ? (
+        <SiteSchedule key={siteFocus || "all"} projects={projects} updateProject={updateProject} focusPid={siteFocus}
+          onOpenPlan={(pid) => { setSelId(pid); setReviewId(pid); setMode("gantt"); }} />
+      ) : mode === "jobs" ? (
         <JobsBoard key={jobsFocus || "all"} projects={projects} updateProject={updateProject} focusPid={jobsFocus}
           onOpenProject={(pid) => { setSelId(pid); setMode("gantt"); }} />
       ) : (
@@ -798,6 +849,12 @@ export default function TimelineBoard({
                 const moved = patch.currentStage && patch.currentStage !== rp.currentStage ? `; dự án tự chuyển sang bước ${patch.currentStage} “${stageLabel(patch.currentStage)}”` : "";
                 commit(rp, patch, skip ? `Đã bỏ qua ${nm} (0 ngày)${moved}` : `Đã bật lại ${nm} — ${Math.max(1, Math.round(days) || 1)} ngày`);
               }}
+              onSetStageStart={(i, v) => {
+                const rp = reviewRow.p;
+                const np = setStageStart(reviewRow.plan, i, v);
+                commit(rp, planToPatch(rp, np, rp.planConfirmed !== false, currentRole), v ? `Bước ${i + 1} “${stageLabel(i + 1)}” bắt đầu ${fdy(np.starts[i] || v)} — các bước khác giữ nguyên (chạy song song nếu chồng lên bước trước)` : `Bước ${i + 1} “${stageLabel(i + 1)}” quay về bắt đầu khi bước trước kết thúc`);
+              }}
+              onOpenSite={() => { setSiteFocus(reviewRow.p.id); setMode("site"); }}
               onSetStart={(v) => {
                 const rp = reviewRow.p;
                 const np = setPlanStart(reviewRow.plan, v, cascade);
@@ -948,6 +1005,17 @@ export default function TimelineBoard({
                       onShift={(d) => doShift(p, plan, d, `Đã dời hạn bước ${p.currentStage} ${d > 0 ? "+" : ""}${d} ngày`)}
                       onToggleGate={(stageId, i) => toggleProjectGate(p.id, stageId, i)}
                       onAdvance={() => advanceProject(p.id)} />
+                    {!archived && (() => {
+                      const its = schedItems(p), lt = its.filter((i) => schedIsLate(i, today)).length;
+                      return (
+                        <div className="tl-sec">
+                          <h4>Tiến độ thi công <span className="tl-src">{its.length ? `${its.length} hạng mục · ${schedPct(its)}%${lt ? ` · ${lt} trễ` : ""}` : "chưa có bảng"}</span></h4>
+                          {its.length > 0 && <div className="tl-prog"><i style={{ width: `${schedPct(its)}%` }} /></div>}
+                          <div className="tl-note" style={{ margin: "4px 0 6px" }}>{its.length ? "Các bước Duyệt mẫu / Manufacturing / Construction / QC / Bàn giao lấy ngày & % từ bảng này." : "Nhập hạng mục thi công chi tiết (dán từ Excel hoặc mẫu nhanh) để theo dõi từng việc và nối với kế hoạch 12 bước."}</div>
+                          <button className="btn btn-outline btn-sm" onClick={() => { setSiteFocus(p.id); setMode("site"); }}>{its.length ? "Mở bảng tiến độ thi công →" : "Lập bảng tiến độ thi công →"}</button>
+                        </div>
+                      );
+                    })()}
                     <ProjectJobs key={"j" + p.id} p={p} today={today} updateProject={updateProject}
                       onOpenAll={() => { setJobsFocus(p.id); setMode("jobs"); }} />
                     <NotesSection key={p.id} p={p} currentRole={currentRole}
@@ -962,7 +1030,7 @@ export default function TimelineBoard({
                               <React.Fragment key={s.id}>
                                 <span className={c}>{c === "done" ? "✓" : c === "cur" ? "▶" : "○"}</span>
                                 <span className={c}>{s.id}. {s.label}</span>
-                                <span className="d">{plan.skips && plan.skips[i] ? "bỏ qua" : <>{c === "done" ? "xong " : "hạn "}{fd(plan.ends[i])}</>}</span>
+                                <span className="d">{plan.skips && plan.skips[i] ? "bỏ qua" : <>{stepIsOwnStart(plan, i) && c !== "done" ? `${fd(stepStart(plan, i))} → ` : ""}{c === "done" ? "xong " : "hạn "}{fd(plan.ends[i])}</>}</span>
                               </React.Fragment>
                             );
                           })}
