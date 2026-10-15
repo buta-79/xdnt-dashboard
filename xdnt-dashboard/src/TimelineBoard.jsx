@@ -4,10 +4,10 @@ import {
   projectCollected, projectAR, milestoneStatus, milestoneAmount, canAdvanceGate, ROLE_LABELS,
   NOTE_LABELS, NOTE_SYMBOL, NOTE_NEED_OPTIONS, NOTE_PRESETS, makeNote, openNotes,
   PLAN_STAGE_COUNT, PLAN_PHASES, PLAN_SIZE_OPTIONS, suggestPlanDays,
-  projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, setStageSkip, planStatus, planProgressPct,
+  projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, setStageSkip, setPlanStart, planStatus, planProgressPct,
   addDaysISO, diffDays,
 } from "./data/seed";
-import { JobsBoard, ProjectJobs } from "./JobsBoard";
+import { JobsBoard, ProjectJobs, JobRow, QuickAdd, jobOps } from "./JobsBoard";
 
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI CHUNG (Gantt) — thay cho bảng "Kế hoạch triển khai" cũ   */
@@ -52,16 +52,17 @@ function CommitInput({ type, value, onCommit, className, min }) {
   const last = useRef(String(value));
   useEffect(() => { setText(String(value)); last.current = String(value); }, [value]);
   useEffect(() => () => clearTimeout(timer.current), []);
-  const commit = (v) => {
+  const commit = (v, final) => {
     clearTimeout(timer.current);
-    if (v !== "" && v !== last.current) { last.current = v; onCommit(v); }
+    if (v === "") { if (final) setText(last.current); return; } // ô để trống (VD bấm “Xóa” ở lịch) → trả về giá trị cũ
+    if (v !== last.current) { last.current = v; onCommit(v); }
   };
   return (
     <input
       type={type} className={className} min={min} value={text}
       onChange={(e) => { const v = e.target.value; setText(v); clearTimeout(timer.current); timer.current = setTimeout(() => commit(v), 900); }}
-      onBlur={(e) => commit(e.target.value)}
-      onKeyDown={(e) => { if (e.key === "Enter") commit(e.target.value); }}
+      onBlur={(e) => commit(e.target.value, true)}
+      onKeyDown={(e) => { if (e.key === "Enter") commit(e.target.value, true); }}
     />
   );
 }
@@ -224,7 +225,7 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
 /*  BƯỚC KIỂM TRA KẾ HOẠCH                                                 */
 /* ====================================================================== */
 
-function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onConfirm, onClose, onReplan, reviewRef }) {
+function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSetStart, onConfirm, onClose, onReplan, reviewRef }) {
   const cur = p.currentStage;
   const total = Math.max(1, diffDays(plan.start, plan.end));
   const bar = PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).map((s, i) => {
@@ -234,6 +235,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onCon
     return <div key={s.id} className={c} style={{ flex: `${dur} 1 0` }} title={`${s.id}. ${s.label}: ${dur} ngày`}>{s.id}</div>;
   });
   const notes = openNotes(p);
+  const firstIdx = (() => { let k = 0; while (k < PLAN_STAGE_COUNT - 1 && plan.skips && plan.skips[k]) k += 1; return k; })();
   const skipNames = PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).filter((s, i) => plan.skips && plan.skips[i]).map((s) => `${s.id}. ${s.label}`);
   const ms = p.paymentMilestones || [];
   const lastMs = ms.length ? ms[ms.length - 1].plannedDate : null;
@@ -262,13 +264,16 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onCon
                 const a = i ? plan.ends[i - 1] : plan.start, b = plan.ends[i], dur = diffDays(a, b);
                 const done = p.stages[s.id]?.state === "done";
                 const skipped = !!(plan.skips && plan.skips[i]);
+                const firstActive = i === firstIdx && !done; // bước làm việc đầu tiên: cho chọn ngày bắt đầu (kể cả ngày đã qua)
                 const nts = notes.filter((x) => x.stage === s.id);
                 return (
                   <tr key={s.id} className={skipped ? "rv-skip" : done ? "rv-done" : s.id === cur ? "rv-cur" : ""}>
                     <td>{done ? "✓" : s.id === cur ? "▶" : s.id}</td>
                     <td><b>{s.label}</b>{(s.id === 6 || s.id === 7) && <> <span className="tl-pill warn" style={{ fontSize: 10 }}>trọng tâm</span></>}{skipped && <> <span className="tl-pill none" style={{ fontSize: 10 }}>bỏ qua</span></>}</td>
                     <td>{s.who}</td>
-                    <td className="tl-num">{skipped ? "—" : fd(a)}</td>
+                    <td className="tl-num">{skipped ? "—" : firstActive
+                      ? <CommitInput type="date" className="input input-sm" value={a} onCommit={(v) => goodDate(v) && onSetStart(v)} />
+                      : fd(a)}</td>
                     <td>{done ? <span className="tl-num">{skipped ? "bỏ qua" : `${fd(b)} (xong)`}</span>
                       : skipped ? <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && diffDays(a, v) >= 1 && onSetSkip(i, false, diffDays(a, v))} />
                       : <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && onEditEnd(i, v)} />}</td>
@@ -297,7 +302,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onCon
           <button className="btn btn-primary" onClick={onConfirm}>{p.planConfirmed === false ? "Xác nhận kế hoạch" : "Lưu & đóng"}</button>
           <button className="btn btn-outline" onClick={onClose}>Đóng</button>
           <button className="btn btn-ghost" onClick={onReplan}>Lập lại từ đầu…</button>
-          <span className="tl-note">Bước đã xong được khóa; sửa hạn hoặc số ngày đều được (lưu khi rời ô hoặc nhấn Enter). <b>Nhập 0 ngày = bỏ qua bước đó</b>; nhập lại số ngày ≥ 1 để bật lại.</span>
+          <span className="tl-note">Bước đã xong được khóa; sửa hạn hoặc số ngày đều được (lưu khi rời ô hoặc nhấn Enter). <b>Nhập 0 ngày = bỏ qua bước đó</b>; nhập lại số ngày ≥ 1 để bật lại. <b>Ngày bắt đầu</b> của bước đầu tiên chọn được cả ngày đã qua (dự án làm gấp, nhập bù thông tin sau).</span>
         </div>
       </div>
     </div>
@@ -534,6 +539,7 @@ export default function TimelineBoard({
   const [view, setView] = useState("active");
   const [mode, setMode] = useState("gantt"); // gantt | jobs
   const [jobsFocus, setJobsFocus] = useState(null);
+  const [openAtt, setOpenAtt] = useState(null); // dòng "Cần xử lý" đang mở ô thêm công tác
   const [sort, setSort] = useState("risk");
   const [zoom, setZoom] = useState("month");
   const [layers, setLayers] = useState({ ms: true, bn: true, tk: true, nt: true });
@@ -697,9 +703,9 @@ export default function TimelineBoard({
     const cur = p.currentStage;
     if (st.k === "bad") {
       const bn = (p.bottlenecks || []).filter((b) => !b.resolvedAt);
-      attention.push({ sev: 0, k: "bad", id: p.id, t: `${c} · ${st.late > 0 ? `Trễ ${st.late} ngày tại bước ${cur} “${stageLabel(cur)}”` : "Có điểm nghẽn"}`, sub: bn.length ? "⚑ " + bn[bn.length - 1].reason : "Dời kế hoạch hoặc xử lý" });
+      attention.push({ sev: 0, k: "bad", id: p.id, stage: cur, t: `${c} · ${st.late > 0 ? `Trễ ${st.late} ngày tại bước ${cur} “${stageLabel(cur)}”` : "Có điểm nghẽn"}`, sub: bn.length ? "⚑ " + bn[bn.length - 1].reason : "Dời kế hoạch hoặc xử lý" });
     }
-    if (st.k === "warn") attention.push({ sev: 1, k: "warn", id: p.id, t: `${c} · Bước ${cur} “${stageLabel(cur)}” hết hạn sau ${st.left} ngày`, sub: "Xác nhận điều kiện để chốt bước" });
+    if (st.k === "warn") attention.push({ sev: 1, k: "warn", id: p.id, stage: cur, t: `${c} · Bước ${cur} “${stageLabel(cur)}” hết hạn sau ${st.left} ngày`, sub: "Xác nhận điều kiện để chốt bước" });
     (tasksByCode[p.code] || []).filter((t) => diffDays(t.dueDate, today) > 0).forEach((t) => attention.push({ sev: 2, k: "bad", id: p.id, t: `${c} · Nhiệm vụ quá hạn ${diffDays(t.dueDate, today)} ngày`, sub: `${t.title}${t.assignee ? " · " + t.assignee : ""}` }));
     (p.paymentMilestones || []).forEach((m, i) => {
       const s = milestoneStatus(p, i);
@@ -710,7 +716,7 @@ export default function TimelineBoard({
     if (lateJobs.length) attention.push({ sev: 2.2, k: "bad", id: p.id, t: `${c} · ${lateJobs.length} việc triển khai trễ hạn`, sub: lateJobs.slice(0, 2).map((j) => j.text).join(" · ") });
     const starJobs = (p.jobs || []).filter((j) => !j.done && j.star && j.due >= today && j.date <= today);
     if (starJobs.length) attention.push({ sev: 2.8, k: "warn", id: p.id, t: `${c} · ★ ${starJobs.length} việc quan trọng hôm nay`, sub: starJobs.slice(0, 2).map((j) => j.text).join(" · ") });
-    openNotes(p).filter((n) => n.type !== "note").forEach((n) => attention.push({ sev: 2.5, k: n.type === "block" ? "bad" : "warn", id: p.id, t: `${c} · ${NOTE_LABELS[n.type]} (bước ${n.stage} ${stageLabel(n.stage)})`, sub: `${n.text}${n.need ? " · cần " + n.need : ""}` }));
+    openNotes(p).filter((n) => n.type !== "note").forEach((n) => attention.push({ sev: 2.5, k: n.type === "block" ? "bad" : "warn", id: p.id, stage: n.stage, t: `${c} · ${NOTE_LABELS[n.type]} (bước ${n.stage} ${stageLabel(n.stage)})`, sub: `${n.text}${n.need ? " · cần " + n.need : ""}` }));
     if (plan && p.planConfirmed === false) attention.push({ sev: 3.5, k: "warn", id: p.id, t: `${c} · Kế hoạch nháp chờ kiểm tra`, sub: "Mở “Kiểm tra & xác nhận kế hoạch”" });
     if (!plan && cur <= PLAN_STAGE_COUNT) attention.push({ sev: 4, k: "none", id: p.id, t: `${c} · Chưa có kế hoạch`, sub: "Tạo nhanh với 2 thông tin" });
   });
@@ -792,6 +798,11 @@ export default function TimelineBoard({
                 const moved = patch.currentStage && patch.currentStage !== rp.currentStage ? `; dự án tự chuyển sang bước ${patch.currentStage} “${stageLabel(patch.currentStage)}”` : "";
                 commit(rp, patch, skip ? `Đã bỏ qua ${nm} (0 ngày)${moved}` : `Đã bật lại ${nm} — ${Math.max(1, Math.round(days) || 1)} ngày`);
               }}
+              onSetStart={(v) => {
+                const rp = reviewRow.p;
+                const np = setPlanStart(reviewRow.plan, v, cascade);
+                commit(rp, planToPatch(rp, np, rp.planConfirmed !== false, currentRole), `Đã đặt ngày bắt đầu ${fdy(np.start)}${cascade ? "; hạn các bước dời theo" : ""}`);
+              }}
               onConfirm={() => { if (reviewRow.p.planConfirmed === false) commit(reviewRow.p, { planConfirmed: true }, `Đã xác nhận kế hoạch ${reviewRow.p.code}`); setReviewId(null); }}
               onClose={() => setReviewId(null)}
               onReplan={() => doClearPlan(reviewRow.p)} />
@@ -844,12 +855,34 @@ export default function TimelineBoard({
           <div className="tl-panel">
             <div className="tl-panel-h"><h3>Cần xử lý hôm nay</h3><span className="sub">tự tổng hợp từ lịch, nhiệm vụ, thu tiền, ghi chú</span></div>
             <div>
-              {attention.map((a, i) => (
-                <div className="tl-att-i" key={i} onClick={() => onSelect(a.id)}>
-                  <span className={`ic ${a.k}`}>{a.k === "bad" ? "✕" : a.k === "warn" ? "▲" : "○"}</span>
-                  <div className="t">{a.t}<small>{a.sub}</small></div>
-                </div>
-              ))}
+              {attention.map((a, i) => {
+                const key = `${a.id}:${i}`;
+                const pr = projects.find((x) => x.id === a.id);
+                const open = openAtt === key;
+                const oj = pr ? (pr.jobs || []).filter((j) => !j.done) : [];
+                const mine = a.stage ? oj.filter((j) => j.stage === a.stage) : [];
+                const list = (mine.length ? mine : oj).slice(0, 6);
+                const ops = pr ? jobOps(pr, updateProject, today) : null;
+                return (
+                  <React.Fragment key={key}>
+                    <div className="tl-att-i" onClick={() => onSelect(a.id)}>
+                      <span className={`ic ${a.k}`}>{a.k === "bad" ? "✕" : a.k === "warn" ? "▲" : "○"}</span>
+                      <div className="t">{a.t}<small>{a.sub}</small></div>
+                      {pr && <button className={`tl-att-add ${open ? "on" : ""}`} title="Thêm / xem công tác cụ thể cho việc này"
+                        onClick={(e) => { e.stopPropagation(); setOpenAtt(open ? null : key); }}>＋ Công tác{oj.length ? ` (${oj.length})` : ""}</button>}
+                    </div>
+                    {open && pr && (
+                      <div className="tl-att-jobs">
+                        <div className="tl-note" style={{ marginBottom: 4 }}>{pr.code.slice(5)} · công tác cụ thể{a.stage ? ` (gắn với bước ${a.stage} “${stageLabel(a.stage)}”)` : ""}</div>
+                        {list.length === 0 && <div className="tl-note">Chưa có công tác nào đang mở.</div>}
+                        {list.map((j) => <JobRow key={j.id} j={j} day={today} onToggle={ops.toggle} onStar={ops.star} onDel={ops.del} />)}
+                        {oj.length > list.length && <div className="tl-note">… còn {oj.length - list.length} việc khác ở mục “Việc hằng ngày”</div>}
+                        <QuickAdd placeholder="+ Thêm công tác (Enter) — có thể gõ ngày: “giao sàn 15.10”" onAdd={(txt) => ops.add(txt, today, a.stage)} />
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
               {attention.length === 0 && <div className="tl-panel-b tl-note">Không có việc cần xử lý.</div>}
             </div>
           </div>
