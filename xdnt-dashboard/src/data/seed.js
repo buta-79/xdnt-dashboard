@@ -418,11 +418,11 @@ export function makeNote(data) {
 export const openNotes = (project) => (project.notes || []).filter((n) => !n.resolved);
 
 /* ---- VIỆC TRIỂN KHAI HẰNG NGÀY — danh sách việc chi tiết theo từng dự án ---- */
-// project.jobs[]: {id, text, date (ngày bắt đầu), due (hạn), done, doneAt, star}
+// project.jobs[]: {id, text, date (ngày bắt đầu), due (hạn), done, doneAt, star, stage (bước liên quan, có thể null)}
 export function makeJob(data, today) {
   const t = today || todayISO();
   const date = data.date || t;
-  return { id: uid("job"), text: String(data.text || "").trim(), date, due: data.due && data.due >= date ? data.due : date, done: false, doneAt: null, star: !!data.star };
+  return { id: uid("job"), text: String(data.text || "").trim(), date, due: data.due && data.due >= date ? data.due : date, done: false, doneAt: null, star: !!data.star, stage: data.stage || null };
 }
 export const jobIsLate = (j, today) => !j.done && j.due < today;
 export const openJobs = (project) => (project.jobs || []).filter((j) => !j.done);
@@ -560,6 +560,24 @@ export function applyStageEnd(plan, idx, newDate, cascade) {
   const ends = plan.ends.slice();
   for (let j = idx; j < k; j++) ends[j] = numDay(e); // gồm cả các bước bỏ qua liền sau
   return { ...plan, ends, end: ends[ends.length - 1] };
+}
+// Đặt NGÀY BẮT ĐẦU của kế hoạch (cho phép ngày trong quá khứ — dự án làm gấp, nhập thông tin bù sau).
+// cascade=true → toàn bộ hạn các bước dời theo (giữ nguyên số ngày mỗi bước); false → giữ nguyên hạn, chỉ đổi điểm bắt đầu.
+export function setPlanStart(plan, newStart, cascade) {
+  if (!newStart || newStart === plan.start) return plan;
+  const sk = plan.skips || [];
+  let first = 0;
+  while (first < PLAN_STAGE_COUNT - 1 && sk[first]) first += 1; // bước làm việc đầu tiên
+  const ends = plan.ends.slice();
+  let start = newStart;
+  if (cascade) {
+    const d = diffDays(plan.start, newStart);
+    for (let i = 0; i < ends.length; i++) ends[i] = addDaysISO(ends[i], d);
+  } else {
+    if (dayNum(start) >= dayNum(ends[first])) start = addDaysISO(ends[first], -1);
+    for (let i = 0; i < first; i++) ends[i] = start;
+  }
+  return { ...plan, start, ends, end: ends[ends.length - 1] };
 }
 // Bật/tắt "bỏ qua" cho bước idx. skip=true → 0 ngày. skip=false → `days` ngày (≥1).
 // cascade=true → các bước sau dời theo (rút/kéo dài kế hoạch); false → giữ nguyên hạn các bước sau.
