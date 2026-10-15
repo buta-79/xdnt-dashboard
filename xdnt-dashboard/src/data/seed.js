@@ -101,17 +101,26 @@ export function advanceGateStage(flow, stageDefs, by, at) {
   if (!def || !canAdvanceGate(def, stage)) return flow; // chặn — chưa đủ điều kiện thì không cho qua bước
   const stages = { ...flow.stages, [stageId]: { ...stage, state: "done", completedAt: at, completedBy: by } };
   const last = stageDefs[stageDefs.length - 1].id;
-  return { ...flow, stages, currentStage: stageId < last ? stageId + 1 : stageId };
+  let next = stageId < last ? stageId + 1 : stageId;
+  // Bước đã đặt "bỏ qua" (0 ngày trong kế hoạch) → tự đánh dấu xong & chuyển tiếp, không bắt tick điều kiện
+  while (next < last && stages[next] && stages[next].skipped) {
+    stages[next] = { ...stages[next], state: "done", completedAt: at, completedBy: by };
+    next += 1;
+  }
+  return { ...flow, stages, currentStage: next };
 }
 export function sendBackGate(flow, reason, by, at) {
   const stageId = flow.currentStage;
   if (stageId <= 1) return flow;
-  const prevId = stageId - 1;
-  const prevStage = flow.stages[prevId];
-  const stages = {
-    ...flow.stages,
-    [prevId]: { ...prevStage, state: "pending", completedAt: null, completedBy: null, gateChecked: prevStage.gateChecked.map(() => false) },
-  };
+  let prevId = stageId - 1;
+  const stages = { ...flow.stages };
+  // lùi qua các bước "bỏ qua" (chúng sẽ tự được bỏ qua lại khi đi tới)
+  while (prevId > 1 && stages[prevId] && stages[prevId].skipped) {
+    stages[prevId] = { ...stages[prevId], state: "pending", completedAt: null, completedBy: null };
+    prevId -= 1;
+  }
+  const prevStage = stages[prevId];
+  stages[prevId] = { ...prevStage, state: "pending", completedAt: null, completedBy: null, gateChecked: prevStage.gateChecked.map(() => false) };
   const bottlenecks = [...(flow.bottlenecks || []), { id: uid("bn"), stageId, reason, by, at, resolvedAt: null }];
   return { ...flow, stages, currentStage: prevId, bottlenecks };
 }
@@ -146,6 +155,7 @@ export function makeOpportunity(data) {
   return {
     id: uid("opp"), title: data.title, customerId: data.customerId, customerName: data.customerName,
     value: data.value || 0, note: data.note || "",
+    baseValue: data.value || 0, valueChanges: [], // giá trị gốc + danh sách điều chỉnh/phát sinh có duyệt (xem "GIÁ TRỊ CÔNG TRÌNH" bên dưới)
     currentStage: 1, status: "open", // open | won | lost
     stages: buildStages(OPP_STAGES),
     bottlenecks: [], lostReason: null, wonProjectCode: null,
@@ -197,6 +207,7 @@ export function makeProject(code, data) {
     id: uid("p"), code,
     name: data.name, customerId: data.customerId, customerName: data.customerName,
     scope: data.scope || "", contractValue: data.contractValue || 0,
+    baseValue: data.baseValue ?? (data.contractValue || 0), valueChanges: data.valueChanges || [], // contractValue = baseValue + điều chỉnh ĐÃ DUYỆT
     currentStage: 1, status: "active", // active | closed | on_hold
     priority: data.priority || "normal", // high | normal | low — dùng cho Kế hoạch triển khai
     plannedStart: data.plannedStart || null, plannedEnd: data.plannedEnd || null, // ngày dự kiến tổng của cả dự án
@@ -246,12 +257,30 @@ export function projectScheduleStatus(project) {
 export function milestoneCumPct(project, uptoIndex) {
   return (project.paymentMilestones || []).slice(0, uptoIndex + 1).reduce((s, m) => s + (m.pct || 0), 0);
 }
+// Số tiền từng đợt: đợt ĐÃ CHỐT (lockedAmount — được ghim khi giá trị hợp đồng đổi
+// lúc đợt đó đã thu đủ) giữ nguyên; phần còn lại chia cho các đợt chưa chốt theo % mới.
+export function milestoneAmounts(project) {
+  const list = project.paymentMilestones || [];
+  const V = project.contractValue || 0;
+  const scheduled = list.reduce((s, m) => s + (m.pct || 0), 0) / 100 * V;
+  const lockedSum = list.reduce((s, m) => s + (m.lockedAmount != null ? m.lockedAmount : 0), 0);
+  const freePct = list.filter((m) => m.lockedAmount == null).reduce((s, m) => s + (m.pct || 0), 0);
+  return list.map((m) => {
+    if (m.lockedAmount != null) return m.lockedAmount;
+    if (!freePct) return 0;
+    return Math.round(Math.max(0, scheduled - lockedSum) * (m.pct || 0) / freePct);
+  });
+}
+// Đợt nào đã thu đủ (tiền đã thu ≥ tổng luỹ kế các đợt tới đó)
+export function milestonePaidFlags(project) {
+  const collected = projectCollected(project);
+  let cum = 0;
+  return milestoneAmounts(project).map((a) => { cum += a; return collected >= cum - 0.5; });
+}
 export function milestoneStatus(project, index) {
   const m = (project.paymentMilestones || [])[index];
   if (!m) return "none";
-  const cumPct = milestoneCumPct(project, index);
-  const expected = (project.contractValue || 0) * cumPct / 100;
-  if (projectCollected(project) >= expected) return "paid";
+  if (milestonePaidFlags(project)[index]) return "paid";
   const d = daysBetween(todayISO(), m.plannedDate);
   if (d < 0) return "overdue";
   if (d <= 14) return "upcoming";
@@ -264,6 +293,82 @@ export function nextPaymentMilestone(project) {
   }
   return null;
 }
+/* ---------------------------------------------------------------------- */
+/*  GIÁ TRỊ CÔNG TRÌNH — giá trị gốc + điều chỉnh/phát sinh có duyệt          */
+/* ---------------------------------------------------------------------- */
+// Dùng chung cho cơ hội (trường value) và dự án (trường contractValue):
+//   baseValue      giá trị gốc (thiếu → lấy giá trị hiện có, để dữ liệu cũ vẫn chạy)
+//   valueChanges[] {id, delta(+/−₫), title, reason, by, byRole, date, status, decidedBy, decidedAt}
+//                  status: "proposed" (chờ BOD duyệt) | "approved" | "rejected"
+//   value / contractValue = baseValue + tổng các điều chỉnh ĐÃ DUYỆT (lưu sẵn để mọi
+//   chỗ đang đọc value/contractValue — báo cáo, Dashboard, Gantt — không phải đổi).
+export const VALUE_CHANGE_PRESETS = [
+  "Phát sinh thêm hạng mục", "Khách đổi vật liệu cao cấp hơn", "Thêm khối lượng thi công",
+  "Phát sinh nhân công ngoài giờ", "Giảm giá theo đàm phán", "Cắt giảm hạng mục",
+];
+const isProjectDoc = (doc) => "contractValue" in doc;
+export const valueField = (doc) => (isProjectDoc(doc) ? "contractValue" : "value");
+export const valueBase = (doc) => (doc.baseValue != null ? doc.baseValue : (doc[valueField(doc)] || 0));
+export const valueApprovedSum = (doc) => (doc.valueChanges || []).filter((c) => c.status === "approved").reduce((s, c) => s + c.delta, 0);
+export const valuePendingSum = (doc) => (doc.valueChanges || []).filter((c) => c.status === "proposed").reduce((s, c) => s + c.delta, 0);
+export const valueTotal = (doc) => valueBase(doc) + valueApprovedSum(doc);
+
+// Ghim số tiền các đợt ĐÃ thu đủ (trước khi tổng đổi) để chúng không bị "lật" thành chưa thu.
+function lockPaidMilestones(project) {
+  const list = project.paymentMilestones || [];
+  if (!list.length) return project;
+  const amounts = milestoneAmounts(project);
+  const paid = milestonePaidFlags(project);
+  return { ...project, paymentMilestones: list.map((m, i) => (paid[i] && m.lockedAmount == null ? { ...m, lockedAmount: amounts[i] } : m)) };
+}
+// Áp tổng mới vào doc: ghim đợt đã thu (nếu là dự án) rồi cập nhật value/contractValue.
+function applyValueTotal(doc, nextChanges, nextBase) {
+  const locked = isProjectDoc(doc) ? lockPaidMilestones(doc) : doc;
+  const next = { ...locked, baseValue: nextBase, valueChanges: nextChanges };
+  return { ...next, [valueField(doc)]: nextBase + nextChanges.filter((c) => c.status === "approved").reduce((s, c) => s + c.delta, 0) };
+}
+// Tổng mới không được thấp hơn số tiền đã thu thực tế (chỉ áp dụng cho dự án)
+export function canApplyValue(doc, newTotal) {
+  return !isProjectDoc(doc) || newTotal >= projectCollected(doc) - 0.5;
+}
+// Đề xuất 1 điều chỉnh. approveNow = BOD ghi nhận & duyệt luôn.
+export function proposeValueChange(doc, { delta, title, reason, by, byRole, date }, approveNow) {
+  if (!delta || !isFinite(delta)) return { error: "Nhập số tiền điều chỉnh khác 0." };
+  const ch = { id: uid("vc"), delta: Math.round(delta), title: (title || "").trim() || (delta > 0 ? "Phát sinh tăng" : "Điều chỉnh giảm"),
+    reason: (reason || "").trim(), by: by || "", byRole: byRole || "", date: date || todayISO(),
+    status: "proposed", decidedBy: null, decidedAt: null };
+  const list = doc.valueChanges || [];
+  if (!approveNow) return { doc: { ...doc, baseValue: valueBase(doc), valueChanges: [...list, ch] } };
+  if (!canApplyValue(doc, valueTotal(doc) + ch.delta)) return { error: "Tổng mới sẽ thấp hơn số tiền đã thu — không thể duyệt." };
+  const approved = { ...ch, status: "approved", decidedBy: by || "", decidedAt: ch.date };
+  return { doc: applyValueTotal(doc, [...list, approved], valueBase(doc)) };
+}
+export function approveValueChange(doc, id, by, at) {
+  const list = doc.valueChanges || [];
+  const ch = list.find((c) => c.id === id);
+  if (!ch || ch.status !== "proposed") return { error: "Điều chỉnh này không còn ở trạng thái chờ duyệt." };
+  if (!canApplyValue(doc, valueTotal(doc) + ch.delta)) return { error: "Tổng mới sẽ thấp hơn số tiền đã thu — không thể duyệt." };
+  const nextList = list.map((c) => (c.id === id ? { ...c, status: "approved", decidedBy: by || "", decidedAt: at || todayISO() } : c));
+  return { doc: applyValueTotal(doc, nextList, valueBase(doc)) };
+}
+export function rejectValueChange(doc, id, by, at) {
+  const list = doc.valueChanges || [];
+  const nextList = list.map((c) => (c.id === id && c.status === "proposed" ? { ...c, status: "rejected", decidedBy: by || "", decidedAt: at || todayISO() } : c));
+  return { doc: { ...doc, baseValue: valueBase(doc), valueChanges: nextList } };
+}
+// Chỉ xoá được điều chỉnh CHƯA duyệt (đã duyệt muốn hoàn lại → thêm 1 điều chỉnh ngược dấu)
+export function removeValueChange(doc, id) {
+  return { ...doc, baseValue: valueBase(doc), valueChanges: (doc.valueChanges || []).filter((c) => !(c.id === id && c.status !== "approved")) };
+}
+// BOD sửa giá trị GỐC — tổng = gốc mới + điều chỉnh đã duyệt
+export function setValueBase(doc, newBase) {
+  const base = Math.max(0, Math.round(Number(newBase) || 0));
+  const list = doc.valueChanges || [];
+  const total = base + list.filter((c) => c.status === "approved").reduce((s, c) => s + c.delta, 0);
+  if (!canApplyValue(doc, total)) return { error: "Tổng mới sẽ thấp hơn số tiền đã thu — không thể lưu." };
+  return { doc: applyValueTotal(doc, list, base) };
+}
+
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI (Gantt chung) — kế hoạch 12 bước + ghi chú thi công      */
 /* ---------------------------------------------------------------------- */
@@ -312,6 +417,72 @@ export function makeNote(data) {
 }
 export const openNotes = (project) => (project.notes || []).filter((n) => !n.resolved);
 
+/* ---- VIỆC TRIỂN KHAI HẰNG NGÀY — danh sách việc chi tiết theo từng dự án ---- */
+// project.jobs[]: {id, text, date (ngày bắt đầu), due (hạn), done, doneAt, star}
+export function makeJob(data, today) {
+  const t = today || todayISO();
+  const date = data.date || t;
+  return { id: uid("job"), text: String(data.text || "").trim(), date, due: data.due && data.due >= date ? data.due : date, done: false, doneAt: null, star: !!data.star };
+}
+export const jobIsLate = (j, today) => !j.done && j.due < today;
+export const openJobs = (project) => (project.jobs || []).filter((j) => !j.done);
+
+const stripVN = (t) => String(t || "").toLowerCase().replace(/đ/g, "d").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+// Tách ngày trong 1 dòng: "14 - 15/10" (khoảng) hoặc "15.10" / "15/10" (1 ngày). Không có ngày → hôm nay.
+export function parseJobDates(text, today) {
+  const t = today || todayISO();
+  const pad = (n) => String(n).padStart(2, "0");
+  const mk = (d, m) => {
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    let y = +t.slice(0, 4);
+    let iso = `${y}-${pad(m)}-${pad(d)}`;
+    if (dayNum(t) - dayNum(iso) > 180) iso = `${y + 1}-${pad(m)}-${pad(d)}`; // đã qua quá lâu → hiểu là năm sau
+    return iso;
+  };
+  let m = String(text).match(/(\d{1,2})\s*-\s*(\d{1,2})\s*[/.]\s*(\d{1,2})(?!\d)/);
+  if (m) { const a = mk(+m[1], +m[3]), b = mk(+m[2], +m[3]); if (a && b && b >= a) return { date: a, due: b }; }
+  m = String(text).match(/(?:^|[^\d])(\d{1,2})\s*[/.]\s*(\d{1,2})(?!\d)/);
+  if (m) { const a = mk(+m[1], +m[2]); if (a) return { date: a, due: a }; }
+  return { date: t, due: t };
+}
+// Nhận ra dự án từ tên nhóm: so các từ của tên nhóm với "mã + tên + khách hàng" của từng dự án.
+export function matchProjectByTitle(title, projects) {
+  const toks = stripVN(title).split(/[^a-z0-9]+/).filter((x) => x.length >= 2 || /\d/.test(x));
+  if (!toks.length) return "";
+  const scored = projects.map((p) => {
+    const hay = stripVN(`${p.code} ${p.name} ${p.customerName}`);
+    const hit = toks.filter((x) => hay.includes(x)).length;
+    return { id: p.id, r: hit / toks.length, hit };
+  }).sort((a, b) => b.r - a.r || b.hit - a.hit);
+  const best = scored[0];
+  if (!best || best.r < 0.6) return "";
+  if (scored[1] && scored[1].r === best.r && scored[1].hit === best.hit) return ""; // 2 dự án ngang điểm → để người dùng chọn
+  return best.id;
+}
+// Phân tích danh sách dán từ Notion/Word: "1. Tên dự án ⇒ lưu ý" + các dòng con "a. việc …"
+export function parseJobList(text, projects, today) {
+  const groups = [];
+  let g = null;
+  String(text || "").split(/\r?\n/).forEach((raw) => {
+    if (!raw.trim()) return;
+    const ind = raw.match(/^\s*/)[0].length;
+    let m = raw.match(/^\s*(\d+)[.)]\s+(.+)$/);
+    if (m && ind < 2) {
+      let title = m[2].trim(), note = null;
+      const k = title.search(/⇒|→|=>/);
+      if (k > -1) { note = title.slice(k).replace(/^(⇒|→|=>)/, "").trim(); title = title.slice(0, k).trim(); }
+      title = title.replace(/:\s*$/, "").trim();
+      g = { title, note: note || null, items: [] };
+      groups.push(g);
+    } else if (g) {
+      m = raw.match(/^\s*(?:[a-zA-Z]|[-•*])[.)]?\s+(.+)$/);
+      const line = (m ? m[1] : raw).trim();
+      if (line) g.items.push(line);
+    }
+  });
+  return groups.map((x) => ({ ...x, pid: matchProjectByTitle(x.title, projects), items: x.items.map((t) => ({ text: t, ...parseJobDates(t, today), on: true })) }));
+}
+
 // ---- tiện ích ngày (YYYY-MM-DD, tính theo UTC để không lệch múi giờ) ----
 const dayNum = (s) => Math.round(Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) / 86400000);
 const numDay = (n) => new Date(n * 86400000).toISOString().slice(0, 10);
@@ -336,77 +507,140 @@ export function distributeDates(from, to, weights) {
   return out;
 }
 // known = ngày kết thúc (thực tế) của các bước đã xong (bước 1..cur-1)
-export function buildPlan(start, end, cur, known) {
+// skips[i] = bước i+1 được BỎ QUA (0 ngày): hạn = hạn bước liền trước, không chiếm thời gian.
+const normSkips = (skips) => Array.from({ length: PLAN_STAGE_COUNT }, (_, i) => !!(skips && skips[i]));
+export function buildPlan(start, end, cur, known, skips) {
   cur = Math.max(1, Math.min(PLAN_STAGE_COUNT, cur));
   known = (known || []).slice(0, cur - 1);
+  const sk = normSkips(skips);
   const last = known.length ? known[known.length - 1] : start;
-  const rest = PLAN_WEIGHTS.slice(cur - 1);
-  const e = Math.max(dayNum(end), dayNum(last) + rest.length);
-  const ends = known.concat(distributeDates(last, numDay(e), rest));
-  return { start, end: ends[PLAN_STAGE_COUNT - 1], baseEnd: end, ends };
+  const restIdx = [];
+  for (let i = cur - 1; i < PLAN_STAGE_COUNT; i++) if (!sk[i]) restIdx.push(i);
+  const ends = known.slice();
+  if (!restIdx.length) {
+    for (let i = cur - 1; i < PLAN_STAGE_COUNT; i++) ends.push(last);
+  } else {
+    const restW = restIdx.map((i) => PLAN_WEIGHTS[i]);
+    const e = Math.max(dayNum(end), dayNum(last) + restW.length);
+    const dist = distributeDates(last, numDay(e), restW);
+    let k = 0, prev = last;
+    for (let i = cur - 1; i < PLAN_STAGE_COUNT; i++) {
+      if (sk[i]) ends.push(prev);
+      else { prev = dist[k++]; ends.push(prev); }
+    }
+  }
+  return { start, end: ends[PLAN_STAGE_COUNT - 1], baseEnd: end, ends, skips: sk };
 }
+const prevEndOf = (plan, idx) => (idx > 0 ? plan.ends[idx - 1] : plan.start);
 // Dời hạn bước idx (0-based) đi `delta` ngày — mọi bước sau dời theo. Không cho bước idx lùi sát/qua bước trước.
+// Bước idx đang "bỏ qua" (0 ngày) thì dời từ bước làm việc gần nhất phía trước (các bước bỏ qua đi theo).
 export function shiftPlanFrom(plan, idx, delta) {
+  const sk = plan.skips || [];
+  let i0 = idx;
+  while (i0 > 0 && sk[i0]) i0 -= 1;
+  if (sk[i0]) return plan; // tất cả các bước từ đầu tới đây đều bỏ qua — không có gì để dời
   const ends = plan.ends.slice();
-  const lo = (idx > 0 ? dayNum(ends[idx - 1]) : dayNum(plan.start)) + 1;
-  const d = Math.max(delta, lo - dayNum(ends[idx]));
-  for (let i = idx; i < ends.length; i++) ends[i] = addDaysISO(ends[i], d);
+  const lo = (i0 > 0 ? dayNum(ends[i0 - 1]) : dayNum(plan.start)) + 1;
+  const d = Math.max(delta, lo - dayNum(ends[i0]));
+  for (let i = i0; i < ends.length; i++) ends[i] = addDaysISO(ends[i], d);
   return { ...plan, ends, end: ends[ends.length - 1] };
 }
 // Đổi hạn 1 bước. cascade=true → các bước sau dời theo; false → chỉ bước đó (kẹp giữa 2 bước kề).
 export function applyStageEnd(plan, idx, newDate, cascade) {
+  const sk = plan.skips || [];
+  if (sk[idx]) return plan; // bước bỏ qua: muốn bật lại phải nhập số ngày ≥ 1 (setStageSkip)
   const old = plan.ends[idx];
   if (!newDate || newDate === old) return plan;
   if (cascade || idx === PLAN_STAGE_COUNT - 1) return shiftPlanFrom(plan, idx, diffDays(old, newDate));
   const lo = (idx > 0 ? dayNum(plan.ends[idx - 1]) : dayNum(plan.start)) + 1;
-  const hi = dayNum(plan.ends[idx + 1]) - 1;
+  let k = idx + 1;
+  while (k < PLAN_STAGE_COUNT && sk[k]) k += 1; // bước làm việc kế tiếp
+  const hi = (k < PLAN_STAGE_COUNT ? dayNum(plan.ends[k]) : dayNum(plan.ends[idx]) + 3650) - 1;
   const e = Math.max(lo, Math.min(hi, dayNum(newDate)));
   const ends = plan.ends.slice();
-  ends[idx] = numDay(e);
-  return { ...plan, ends };
+  for (let j = idx; j < k; j++) ends[j] = numDay(e); // gồm cả các bước bỏ qua liền sau
+  return { ...plan, ends, end: ends[ends.length - 1] };
+}
+// Bật/tắt "bỏ qua" cho bước idx. skip=true → 0 ngày. skip=false → `days` ngày (≥1).
+// cascade=true → các bước sau dời theo (rút/kéo dài kế hoạch); false → giữ nguyên hạn các bước sau.
+export function setStageSkip(plan, idx, skip, days, cascade) {
+  const sk = normSkips(plan.skips);
+  if (sk[idx] === !!skip && skip) return plan;
+  const pe = dayNum(prevEndOf(plan, idx));
+  const ends = plan.ends.slice();
+  const oldEnd = dayNum(ends[idx]);
+  sk[idx] = !!skip;
+  let newEnd = skip ? pe : pe + Math.max(1, Math.round(days) || 1);
+  let k = idx + 1;
+  while (k < PLAN_STAGE_COUNT && sk[k]) k += 1;
+  if (!cascade && !skip && k < PLAN_STAGE_COUNT) newEnd = Math.min(newEnd, Math.max(pe + 1, dayNum(ends[k]) - 1));
+  if (cascade) {
+    const delta = newEnd - oldEnd;
+    for (let i = idx; i < ends.length; i++) ends[i] = numDay(dayNum(ends[i]) + delta);
+  } else {
+    for (let i = idx; i < k; i++) ends[i] = numDay(newEnd);
+  }
+  return { ...plan, ends, end: ends[ends.length - 1], skips: sk };
 }
 
 // Đọc kế hoạch của dự án → { start, ends[12], end, baseEnd, confirmed } hoặc null nếu chưa có kế hoạch đầy đủ.
 export function projectPlan(project) {
   const start = project.plannedStart;
   if (!start) return null;
+  const skips = [];
   const ends = [];
   for (let id = 1; id <= PLAN_STAGE_COUNT; id++) {
     const st = project.stages?.[id];
+    const sk = !!(st && st.skipped);
+    skips.push(sk);
     const d = st && st.state === "done" && st.completedAt ? String(st.completedAt).slice(0, 10) : st?.plannedDate;
-    if (!d) return null;
-    ends.push(d);
+    if (!d && !sk) return null;
+    ends.push(d || start);
   }
-  // chuẩn hoá tăng dần (bước đã xong trễ hơn hạn của bước sau → bước sau lùi theo, chỉ để hiển thị)
+  // chuẩn hoá: bước bỏ qua = hạn bước liền trước (0 ngày); bước còn lại tăng dần (≥ +1 ngày)
   for (let i = 0; i < ends.length; i++) {
+    if (skips[i]) { ends[i] = i ? ends[i - 1] : start; continue; }
     const lo = (i ? dayNum(ends[i - 1]) : dayNum(start)) + 1;
     if (dayNum(ends[i]) < lo) ends[i] = numDay(lo);
   }
   const end = ends[PLAN_STAGE_COUNT - 1];
-  return { start, ends, end, baseEnd: project.planBaseEnd || end, confirmed: project.planConfirmed !== false };
+  return { start, ends, skips, end, baseEnd: project.planBaseEnd || end, confirmed: project.planConfirmed !== false };
 }
 // Ghi kế hoạch vào các trường của dự án (trả về patch cho updateProject). Bước đã xong giữ nguyên plannedDate gốc.
-export function planToPatch(project, plan, confirmed) {
+export function planToPatch(project, plan, confirmed, by) {
   const stages = { ...project.stages };
   for (let id = 1; id <= PLAN_STAGE_COUNT; id++) {
     const st = stages[id];
-    if (st && st.state !== "done") stages[id] = { ...st, plannedDate: plan.ends[id - 1] };
+    if (st && st.state !== "done") {
+      stages[id] = { ...st, plannedDate: plan.ends[id - 1], skipped: plan.skips ? !!plan.skips[id - 1] : !!st.skipped };
+    }
   }
-  return { plannedStart: plan.start, plannedEnd: plan.end, planBaseEnd: plan.baseEnd || plan.end, planConfirmed: confirmed, stages };
+  const patch = { plannedStart: plan.start, plannedEnd: plan.end, planBaseEnd: plan.baseEnd || plan.end, planConfirmed: confirmed, stages };
+  // Bước hiện tại vừa bị đặt "bỏ qua" → tự đánh dấu xong và chuyển tới bước kế tiếp cần làm
+  let cs = project.currentStage;
+  const at = todayISO();
+  while (cs <= PLAN_STAGE_COUNT && stages[cs] && stages[cs].skipped && stages[cs].state !== "done") {
+    stages[cs] = { ...stages[cs], state: "done", completedAt: at, completedBy: by || null };
+    cs += 1;
+  }
+  if (cs !== project.currentStage) patch.currentStage = cs;
+  return patch;
 }
 // Gợi ý kế hoạch chỉ từ: ngày bắt đầu + (số ngày theo quy mô | ngày kết thúc).
 // Các bước đã xong dùng ngày thực tế; nếu thiếu thì rải đều tới 7 ngày trước hôm nay.
 export function suggestPlan(project, opts, today = todayISO()) {
   const start = opts.start || project.plannedStart || project.createdAt || today;
   const cur = Math.max(1, Math.min(PLAN_STAGE_COUNT, project.currentStage));
+  const sk = normSkips(Array.from({ length: PLAN_STAGE_COUNT }, (_, i) => !!project.stages?.[i + 1]?.skipped));
   let known = [];
   if (cur > 1) {
     const lk = dayNum(addDaysISO(today, -7)) > dayNum(start) + cur - 1 ? addDaysISO(today, -7) : addDaysISO(start, cur - 1);
-    const cw = PLAN_WEIGHTS.slice(0, cur - 1);
-    const sum = cw.reduce((a, b) => a + b, 0);
+    const cw = PLAN_WEIGHTS.slice(0, cur - 1).map((w, i) => (sk[i] ? 0 : w));
+    const sum = cw.reduce((a, b) => a + b, 0) || 1;
     let c = 0, prev = dayNum(start);
     cw.forEach((w, i) => {
       c += w;
+      if (sk[i]) { known.push(numDay(prev)); return; }
       const st = project.stages?.[i + 1];
       const actual = st && st.state === "done" && st.completedAt ? dayNum(String(st.completedAt).slice(0, 10)) : null;
       let e = actual !== null ? actual : dayNum(start) + Math.round(((dayNum(lk) - dayNum(start)) * c) / sum);
@@ -416,10 +650,10 @@ export function suggestPlan(project, opts, today = todayISO()) {
     });
   }
   const last = known.length ? known[known.length - 1] : start;
-  const restW = PLAN_WEIGHTS.slice(cur - 1);
+  const restW = PLAN_WEIGHTS.slice(cur - 1).filter((_, i) => !sk[cur - 1 + i]);
   const share = restW.reduce((a, b) => a + b, 0) / 100;
   const end = opts.end ? opts.end : addDaysISO(last, Math.max(restW.length, Math.round((opts.days || suggestPlanDays(project.contractValue)) * share)));
-  const plan = buildPlan(start, end, cur, known);
+  const plan = buildPlan(start, end, cur, known, sk);
   plan.baseEnd = plan.end;
   // Kế hoạch do hệ thống tự đề xuất (chưa ai nhập ngày kết thúc): bước hiện tại luôn còn ≥ 7 ngày kể từ hôm nay,
   // để bản nháp không "trễ" ngay từ đầu chỉ vì giả định thời lượng chung — người dùng sẽ chỉnh ở bước kiểm tra.
@@ -451,13 +685,16 @@ export function planStatus(project, today = todayISO()) {
 export function planProgressPct(project, today = todayISO()) {
   if (project.status === "closed" || project.currentStage > PLAN_STAGE_COUNT) return 100;
   const cur = project.currentStage;
-  let pct = PLAN_WEIGHTS.slice(0, cur - 1).reduce((a, b) => a + b, 0);
   const plan = projectPlan(project);
+  const sk = plan ? plan.skips : [];
+  const w = PLAN_WEIGHTS.map((x, i) => (sk[i] ? 0 : x)); // bước bỏ qua không tính vào tiến độ
+  const total = w.reduce((a, b) => a + b, 0) || 1;
+  let pct = w.slice(0, cur - 1).reduce((a, b) => a + b, 0);
   if (plan) {
-    const s = cur > 1 ? plan.ends[cur - 2] : plan.start, e = plan.ends[cur - 1];
-    pct += PLAN_WEIGHTS[cur - 1] * Math.max(0, Math.min(1, diffDays(s, today) / Math.max(1, diffDays(s, e))));
+    const s0 = cur > 1 ? plan.ends[cur - 2] : plan.start, e = plan.ends[cur - 1];
+    pct += w[cur - 1] * Math.max(0, Math.min(1, diffDays(s0, today) / Math.max(1, diffDays(s0, e))));
   }
-  return Math.round(pct);
+  return Math.round((pct * 100) / total);
 }
 // Sau khi 1 bước vừa được hoàn thành: nếu hoàn thành TRỄ hơn hạn của bước đó → chia lại các bước còn lại
 // từ hôm nay tới ngày kết thúc (kế hoạch giữ nguyên ngày kết thúc). Hoàn thành đúng/sớm hạn → giữ nguyên.
@@ -471,11 +708,12 @@ export function replanAfterAdvance(oldProject, newProject) {
   const cur = newProject.currentStage;
   const known = old.ends.slice(0, cur - 1);
   known[stageId - 1] = String(actual).slice(0, 10);
-  const plan = buildPlan(old.start, old.end, cur, known);
+  for (let i = stageId; i < cur - 1; i++) if (old.skips[i]) known[i] = known[stageId - 1]; // bước bỏ qua đi theo
+  const plan = buildPlan(old.start, old.end, cur, known, old.skips);
   plan.baseEnd = old.baseEnd;
   return { ...newProject, ...planToPatch(newProject, plan, old.confirmed) };
 }
-export const milestoneAmount = (project, index) => ((project.paymentMilestones || [])[index]?.pct || 0) / 100 * (project.contractValue || 0);
+export const milestoneAmount = (project, index) => milestoneAmounts(project)[index] || 0;
 
 export function makeRevenueEvent(type, date, amount, note) {
   return { id: uid("rev"), type, date, amount, note };
