@@ -661,3 +661,8 @@
 @media (max-width: 860px) { .jb-grid { grid-template-columns: 1fr; } }
 .tl-rv tr.rv-skip td { color: var(--tl-mute); background: repeating-linear-gradient(135deg, #F6F3EC 0 6px, #FBFAF6 6px 12px); }
 .tl-rv tr.rv-skip td b { text-decoration: line-through; }
+.tl-att-add { margin-left: auto; flex: 0 0 auto; border: 1px solid var(--line-dark); background: var(--panel); color: var(--ink-soft); font: inherit; font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
+.tl-att-add:hover, .tl-att-add.on { border-color: var(--copper); color: var(--copper); }
+.tl-att-jobs { padding: 6px 14px 12px 42px; background: #FBFAF6; border-top: 1px dashed var(--line); }
+.tl-att-jobs .jb-job { padding: 4px 0; }
+.tl-att-jobs .jb-add { padding: 6px 0 0; }
