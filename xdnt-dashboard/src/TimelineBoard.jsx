@@ -4,9 +4,10 @@ import {
   projectCollected, projectAR, milestoneStatus, milestoneAmount, canAdvanceGate, ROLE_LABELS,
   NOTE_LABELS, NOTE_SYMBOL, NOTE_NEED_OPTIONS, NOTE_PRESETS, makeNote, openNotes,
   PLAN_STAGE_COUNT, PLAN_PHASES, PLAN_SIZE_OPTIONS, suggestPlanDays,
-  projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, planStatus, planProgressPct,
+  projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, setStageSkip, planStatus, planProgressPct,
   addDaysISO, diffDays,
 } from "./data/seed";
+import { JobsBoard, ProjectJobs } from "./JobsBoard";
 
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI CHUNG (Gantt) — thay cho bảng "Kế hoạch triển khai" cũ   */
@@ -139,6 +140,7 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
               <div className="tl-g-track" style={{ width: W }}>
                 {plan ? PLAN_PHASES.map((ph, k) => {
                   const a = k === 0 ? plan.start : plan.ends[PLAN_PHASES[k - 1].to - 1], b = plan.ends[ph.to - 1];
+                  if (d2n(b) === d2n(a)) return null; // cả giai đoạn được bỏ qua → không vẽ
                   const left = (d2n(a) - mn) * dw, w = Math.max(2, (d2n(b) - d2n(a)) * dw);
                   const state = ph.to < cur ? "done" : (ph.from <= cur && cur <= ph.to) ? "cur" : "fut";
                   const label = w > 78 ? ph.name : (w > 30 ? ph.name.split(" ")[0] : "");
@@ -222,15 +224,17 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
 /*  BƯỚC KIỂM TRA KẾ HOẠCH                                                 */
 /* ====================================================================== */
 
-function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onConfirm, onClose, onReplan, reviewRef }) {
+function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onConfirm, onClose, onReplan, reviewRef }) {
   const cur = p.currentStage;
   const total = Math.max(1, diffDays(plan.start, plan.end));
   const bar = PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).map((s, i) => {
     const a = i ? plan.ends[i - 1] : plan.start, dur = diffDays(a, plan.ends[i]);
     const c = i + 1 < cur ? "d" : i + 1 === cur ? "c" : "f";
+    if (dur === 0) return null; // bước bỏ qua: không chiếm thời gian
     return <div key={s.id} className={c} style={{ flex: `${dur} 1 0` }} title={`${s.id}. ${s.label}: ${dur} ngày`}>{s.id}</div>;
   });
   const notes = openNotes(p);
+  const skipNames = PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).filter((s, i) => plan.skips && plan.skips[i]).map((s) => `${s.id}. ${s.label}`);
   const ms = p.paymentMilestones || [];
   const lastMs = ms.length ? ms[ms.length - 1].plannedDate : null;
   const gap = lastMs ? diffDays(lastMs, plan.end) : null;
@@ -257,17 +261,26 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onConfirm, onClo
               {PROJECT_STAGES.slice(0, PLAN_STAGE_COUNT).map((s, i) => {
                 const a = i ? plan.ends[i - 1] : plan.start, b = plan.ends[i], dur = diffDays(a, b);
                 const done = p.stages[s.id]?.state === "done";
+                const skipped = !!(plan.skips && plan.skips[i]);
                 const nts = notes.filter((x) => x.stage === s.id);
                 return (
-                  <tr key={s.id} className={done ? "rv-done" : s.id === cur ? "rv-cur" : ""}>
+                  <tr key={s.id} className={skipped ? "rv-skip" : done ? "rv-done" : s.id === cur ? "rv-cur" : ""}>
                     <td>{done ? "✓" : s.id === cur ? "▶" : s.id}</td>
-                    <td><b>{s.label}</b>{(s.id === 6 || s.id === 7) && <> <span className="tl-pill warn" style={{ fontSize: 10 }}>trọng tâm</span></>}</td>
+                    <td><b>{s.label}</b>{(s.id === 6 || s.id === 7) && <> <span className="tl-pill warn" style={{ fontSize: 10 }}>trọng tâm</span></>}{skipped && <> <span className="tl-pill none" style={{ fontSize: 10 }}>bỏ qua</span></>}</td>
                     <td>{s.who}</td>
-                    <td className="tl-num">{fd(a)}</td>
-                    <td>{done ? <span className="tl-num">{fd(b)} (xong)</span>
+                    <td className="tl-num">{skipped ? "—" : fd(a)}</td>
+                    <td>{done ? <span className="tl-num">{skipped ? "bỏ qua" : `${fd(b)} (xong)`}</span>
+                      : skipped ? <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && diffDays(a, v) >= 1 && onSetSkip(i, false, diffDays(a, v))} />
                       : <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && onEditEnd(i, v)} />}</td>
-                    <td>{done ? <span className="tl-num">{dur}</span>
-                      : <CommitInput type="number" min="1" className="input input-sm dur" value={dur} onCommit={(v) => onEditEnd(i, addDaysISO(a, Math.max(1, Math.round(+v) || 1)))} />}</td>
+                    <td>{done ? <span className="tl-num">{skipped ? 0 : dur}</span>
+                      : <CommitInput type="number" min="0" className="input input-sm dur" value={dur}
+                          onCommit={(v) => {
+                            const n = Math.round(+v);
+                            if (!(n >= 0)) return;
+                            if (n === 0) { if (!skipped) onSetSkip(i, true, 0); }
+                            else if (skipped) onSetSkip(i, false, n);
+                            else onEditEnd(i, addDaysISO(a, n));
+                          }} />}</td>
                     <td className="tl-num">{Math.round((dur / total) * 100)}%</td>
                     <td>{nts.map((x) => <i key={x.id} className={`tl-nm ${x.type}`} title={`${NOTE_LABELS[x.type]}: ${x.text}`} style={{ marginRight: 3 }}>{NOTE_SYMBOL[x.type]}</i>)}</td>
                   </tr>
@@ -276,6 +289,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onConfirm, onClo
             </tbody>
           </table>
         </div>
+        {skipNames.length > 0 && <div className="tl-okbox" style={{ marginTop: 8 }}>↷ Bỏ qua {skipNames.length} bước (không cần ở dự án này): {skipNames.join(" · ")} — tự chuyển qua khi tới lượt, không cần tick điều kiện.</div>}
         {gap !== null && (gap > 0
           ? <div className="tl-warnbox">▲ Kế hoạch kết thúc <b>sau</b> đợt thu cuối ({fd(lastMs)}) {gap} ngày — nên rút kế hoạch hoặc dời đợt thu <span className="tl-src">Thu hồi công nợ</span></div>
           : <div className="tl-okbox" style={{ marginTop: 8 }}>✓ Kế hoạch kết thúc {gap === 0 ? "đúng" : `sớm ${-gap} ngày so với`} đợt thu cuối ({fd(lastMs)}) <span className="tl-src">Thu hồi công nợ</span></div>)}
@@ -283,7 +297,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onConfirm, onClo
           <button className="btn btn-primary" onClick={onConfirm}>{p.planConfirmed === false ? "Xác nhận kế hoạch" : "Lưu & đóng"}</button>
           <button className="btn btn-outline" onClick={onClose}>Đóng</button>
           <button className="btn btn-ghost" onClick={onReplan}>Lập lại từ đầu…</button>
-          <span className="tl-note">Bước đã xong được khóa; sửa hạn hoặc số ngày đều được (lưu khi rời ô hoặc nhấn Enter).</span>
+          <span className="tl-note">Bước đã xong được khóa; sửa hạn hoặc số ngày đều được (lưu khi rời ô hoặc nhấn Enter). <b>Nhập 0 ngày = bỏ qua bước đó</b>; nhập lại số ngày ≥ 1 để bật lại.</span>
         </div>
       </div>
     </div>
@@ -492,7 +506,7 @@ function ArchiveSection({ p, isBOD, openTasksCount, onArchive }) {
   if (!isBOD) return <div className="tl-sec"><span className="tl-note">Chỉ BOD được đánh dấu hoàn thành → lưu trữ dự án.</span></div>;
   if (!ask) return <div className="tl-sec"><button className="btn btn-outline btn-sm" onClick={() => setAsk(true)}>Lưu trữ dự án…</button></div>;
   const ar = Math.max(0, projectAR(p));
-  const openW = (p.workItems || []).filter((w) => w.status !== "done").length + openNotes(p).filter((n) => n.type !== "note").length;
+  const openW = (p.workItems || []).filter((w) => w.status !== "done").length + openNotes(p).filter((n) => n.type !== "note").length + (p.jobs || []).filter((j) => !j.done).length;
   const total = openTasksCount + openW;
   return (
     <div className="tl-sec">
@@ -518,6 +532,8 @@ export default function TimelineBoard({
   const today = todayISO();
   const isBOD = currentRole === "BOD";
   const [view, setView] = useState("active");
+  const [mode, setMode] = useState("gantt"); // gantt | jobs
+  const [jobsFocus, setJobsFocus] = useState(null);
   const [sort, setSort] = useState("risk");
   const [zoom, setZoom] = useState("month");
   const [layers, setLayers] = useState({ ms: true, bn: true, tk: true, nt: true });
@@ -537,7 +553,7 @@ export default function TimelineBoard({
   useEffect(() => {
     if (!focusCode) return;
     const p = projects.find((x) => x.code === focusCode);
-    if (p) { setSelId(p.id); setView(p.status === "closed" ? "archived" : "active"); }
+    if (p) { setSelId(p.id); setMode("gantt"); setView(p.status === "closed" ? "archived" : "active"); }
   }, [focusCode]);
 
   const showToast = (msg, undo) => {
@@ -607,6 +623,7 @@ export default function TimelineBoard({
   const noPlan = activeRows.filter((r) => !r.plan && r.p.currentStage <= PLAN_STAGE_COUNT);
   const drafts = activeRows.filter((r) => r.plan && r.p.planConfirmed === false);
   const totalValue = act.reduce((s, p) => s + (p.contractValue || 0), 0);
+  const lateJobsTotal = act.reduce((s, p) => s + (p.jobs || []).filter((j) => !j.done && j.due < today).length, 0);
 
   /* ---- hành động ---- */
   const sel = selRow?.p;
@@ -689,6 +706,10 @@ export default function TimelineBoard({
       if (s === "overdue") attention.push({ sev: 2, k: "bad", id: p.id, t: `${c} · Đợt thu “${m.label}” quá hạn ${diffDays(m.plannedDate, today)} ngày`, sub: formatCompactVND(milestoneAmount(p, i)) });
       else if (s === "upcoming" && diffDays(today, m.plannedDate) <= 7) attention.push({ sev: 3, k: "warn", id: p.id, t: `${c} · Đợt thu “${m.label}” đến hạn ${fd(m.plannedDate)}`, sub: formatCompactVND(milestoneAmount(p, i)) });
     });
+    const lateJobs = (p.jobs || []).filter((j) => !j.done && j.due < today);
+    if (lateJobs.length) attention.push({ sev: 2.2, k: "bad", id: p.id, t: `${c} · ${lateJobs.length} việc triển khai trễ hạn`, sub: lateJobs.slice(0, 2).map((j) => j.text).join(" · ") });
+    const starJobs = (p.jobs || []).filter((j) => !j.done && j.star && j.due >= today && j.date <= today);
+    if (starJobs.length) attention.push({ sev: 2.8, k: "warn", id: p.id, t: `${c} · ★ ${starJobs.length} việc quan trọng hôm nay`, sub: starJobs.slice(0, 2).map((j) => j.text).join(" · ") });
     openNotes(p).filter((n) => n.type !== "note").forEach((n) => attention.push({ sev: 2.5, k: n.type === "block" ? "bad" : "warn", id: p.id, t: `${c} · ${NOTE_LABELS[n.type]} (bước ${n.stage} ${stageLabel(n.stage)})`, sub: `${n.text}${n.need ? " · cần " + n.need : ""}` }));
     if (plan && p.planConfirmed === false) attention.push({ sev: 3.5, k: "warn", id: p.id, t: `${c} · Kế hoạch nháp chờ kiểm tra`, sub: "Mở “Kiểm tra & xác nhận kế hoạch”" });
     if (!plan && cur <= PLAN_STAGE_COUNT) attention.push({ sev: 4, k: "none", id: p.id, t: `${c} · Chưa có kế hoạch`, sub: "Tạo nhanh với 2 thông tin" });
@@ -699,6 +720,17 @@ export default function TimelineBoard({
 
   return (
     <div className="tl-board">
+      <div className="tl-modebar">
+        <div className="tl-seg">
+          <button className={mode === "gantt" ? "on" : ""} onClick={() => setMode("gantt")}>Lịch triển khai</button>
+          <button className={mode === "jobs" ? "on" : ""} onClick={() => { setJobsFocus(null); setMode("jobs"); }}>Việc hằng ngày{lateJobsTotal > 0 ? ` · ${lateJobsTotal} trễ` : ""}</button>
+        </div>
+      </div>
+      {mode === "jobs" ? (
+        <JobsBoard key={jobsFocus || "all"} projects={projects} updateProject={updateProject} focusPid={jobsFocus}
+          onOpenProject={(pid) => { setSelId(pid); setMode("gantt"); }} />
+      ) : (
+      <>
       <div className="tl-kpis">
         <div className="tl-kpi"><div className="l">Đang triển khai</div><div className="v">{act.length}</div><div className="s">dự án</div></div>
         <div className="tl-kpi"><div className="l">Tổng giá trị HĐ</div><div className="v">{formatCompactVND(totalValue)}</div><div className="s">đang chạy</div></div>
@@ -751,6 +783,14 @@ export default function TimelineBoard({
               onEditEnd={(i, nd) => {
                 const np = applyStageEnd(reviewRow.plan, i, nd, cascade);
                 if (np !== reviewRow.plan) commit(reviewRow.p, planToPatch(reviewRow.p, np, reviewRow.p.planConfirmed !== false), `Đã đổi hạn bước ${i + 1} “${stageLabel(i + 1)}” → ${fd(np.ends[i])}${cascade && i < PLAN_STAGE_COUNT - 1 ? "; các bước sau dời theo" : ""}`);
+              }}
+              onSetSkip={(i, skip, days) => {
+                const rp = reviewRow.p;
+                const np = setStageSkip(reviewRow.plan, i, skip, days, cascade);
+                const patch = planToPatch(rp, np, rp.planConfirmed !== false, currentRole);
+                const nm = `bước ${i + 1} “${stageLabel(i + 1)}”`;
+                const moved = patch.currentStage && patch.currentStage !== rp.currentStage ? `; dự án tự chuyển sang bước ${patch.currentStage} “${stageLabel(patch.currentStage)}”` : "";
+                commit(rp, patch, skip ? `Đã bỏ qua ${nm} (0 ngày)${moved}` : `Đã bật lại ${nm} — ${Math.max(1, Math.round(days) || 1)} ngày`);
               }}
               onConfirm={() => { if (reviewRow.p.planConfirmed === false) commit(reviewRow.p, { planConfirmed: true }, `Đã xác nhận kế hoạch ${reviewRow.p.code}`); setReviewId(null); }}
               onClose={() => setReviewId(null)}
@@ -875,6 +915,8 @@ export default function TimelineBoard({
                       onShift={(d) => doShift(p, plan, d, `Đã dời hạn bước ${p.currentStage} ${d > 0 ? "+" : ""}${d} ngày`)}
                       onToggleGate={(stageId, i) => toggleProjectGate(p.id, stageId, i)}
                       onAdvance={() => advanceProject(p.id)} />
+                    <ProjectJobs key={"j" + p.id} p={p} today={today} updateProject={updateProject}
+                      onOpenAll={() => { setJobsFocus(p.id); setMode("jobs"); }} />
                     <NotesSection key={p.id} p={p} currentRole={currentRole}
                       onAdd={(data) => addNote(p, data)} onToggle={(id) => toggleNote(p, id)} onRemove={(id) => removeNote(p, id)} />
                     {plan && (
@@ -887,7 +929,7 @@ export default function TimelineBoard({
                               <React.Fragment key={s.id}>
                                 <span className={c}>{c === "done" ? "✓" : c === "cur" ? "▶" : "○"}</span>
                                 <span className={c}>{s.id}. {s.label}</span>
-                                <span className="d">{c === "done" ? "xong " : "hạn "}{fd(plan.ends[i])}</span>
+                                <span className="d">{plan.skips && plan.skips[i] ? "bỏ qua" : <>{c === "done" ? "xong " : "hạn "}{fd(plan.ends[i])}</>}</span>
                               </React.Fragment>
                             );
                           })}
@@ -904,6 +946,9 @@ export default function TimelineBoard({
           })()}
         </div>
       </div>
+
+      </>
+      )}
 
       {toast && (
         <div className="tl-toast"><span>{toast.msg}</span>{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>
