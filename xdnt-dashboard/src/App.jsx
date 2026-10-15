@@ -24,7 +24,9 @@ import {
   OPP_STAGES, OPP_DECISION_STAGE_ID, makeOpportunity,
   PROJECT_STAGES, PROJECT_FINAL_STAGE_ID, PROJECT_WARRANTY_STAGE_ID, PROJECT_ACCEPTANCE_STAGE_ID, makeProject,
   projectCollected, projectAR, projectStagePct, projectRiskLevel, makeRevenueEvent, makeCost,
-  milestoneStatus, nextPaymentMilestone,
+  milestoneStatus, milestoneAmount, nextPaymentMilestone,
+  VALUE_CHANGE_PRESETS, valueBase, valueTotal, valuePendingSum, valueApprovedSum,
+  proposeValueChange, approveValueChange, rejectValueChange, removeValueChange, setValueBase,
   projectPlan, planStatus, replanAfterAdvance, planToPatch, suggestPlan, suggestPlanDays,
   PRIORITIES, PRIORITY_LABELS, COST_CATEGORY_PRESETS,
   makeTask, isTaskOverdue, makeWarrantyRecord, makeEmployee, employeeSummary,
@@ -187,7 +189,9 @@ function StageGateStepper({ stageDefs, flow, currentRole, onToggleGate, onAdvanc
               </div>
               <div className="step-title">{s.label}</div>
 
-              {isDone && stage.completedAt && (
+              {isDone && stage.skipped && <div className="step-meta">↷ Bỏ qua — không cần ở dự án này</div>}
+              {!isDone && stage.skipped && <div className="step-meta">↷ Sẽ tự bỏ qua khi tới lượt (kế hoạch đặt 0 ngày)</div>}
+              {isDone && !stage.skipped && stage.completedAt && (
                 <div className="step-meta">Hoàn thành {stage.completedAt} bởi {stage.completedBy}</div>
               )}
 
@@ -536,7 +540,128 @@ function NewOpportunityForm({ customers, onCancel, onCreate }) {
   );
 }
 
-function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, onSendBack, onWon, onLost, onDelete, goToProject }) {
+/* ---------------------------------------------------------------------- */
+/*  GIÁ TRỊ CÔNG TRÌNH — giá trị gốc + điều chỉnh/phát sinh có duyệt         */
+/* ---------------------------------------------------------------------- */
+// Dùng chung cho Cơ hội (doc.value) và Dự án (doc.contractValue). KD/BP đề xuất,
+// BOD duyệt — chỉ điều chỉnh ĐÃ DUYỆT mới được cộng vào tổng.
+function ValuePanel({ doc, kind, currentRole, myName, onChange, readOnly, readOnlyNote }) {
+  const isBOD = currentRole === "BOD";
+  const [sign, setSign] = useState(1);
+  const [amount, setAmount] = useState(0);
+  const [title, setTitle] = useState("");
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
+  const [editBase, setEditBase] = useState(false);
+  const [baseDraft, setBaseDraft] = useState(0);
+
+  const base = valueBase(doc);
+  const approved = valueApprovedSum(doc);
+  const pending = valuePendingSum(doc);
+  const total = valueTotal(doc);
+  const changes = (doc.valueChanges || []).slice().reverse();
+  const signed = (n) => `${n > 0 ? "+" : "−"}${formatVND(Math.abs(n))}`;
+  const STATUS = { proposed: "Chờ duyệt", approved: "Đã duyệt", rejected: "Từ chối" };
+
+  const run = (res) => { if (res.error) { setErr(res.error); return false; } setErr(""); onChange(res.doc); return true; };
+  const submit = (approveNow) => {
+    const n = Number(amount) || 0;
+    if (n <= 0) { setErr("Nhập số tiền điều chỉnh (lớn hơn 0)."); return; }
+    const ok = run(proposeValueChange(doc, { delta: sign * n, title, reason, by: myName, byRole: currentRole }, approveNow && isBOD));
+    if (ok) { setAmount(0); setTitle(""); setReason(""); }
+  };
+
+  return (
+    <div className="pd-payment panel-sub vp">
+      <div className="pd-payment-head">
+        <h4>{kind === "opp" ? "Giá trị ước tính" : "Giá trị hợp đồng"} — điều chỉnh &amp; phát sinh</h4>
+        {isBOD && !readOnly && !editBase && (
+          <button className="btn btn-ghost btn-sm" onClick={() => { setBaseDraft(base); setEditBase(true); }}><PenLine size={12} /> Sửa giá trị gốc</button>
+        )}
+      </div>
+
+      <div className="vp-strip">
+        <div className="vp-cell">
+          <span className="dim">Giá trị gốc</span>
+          {editBase ? (
+            <div className="vp-base-edit">
+              <NumberInput className="input input-sm" value={baseDraft} onChange={setBaseDraft} />
+              <button className="btn btn-primary btn-sm" onClick={() => { if (run(setValueBase(doc, baseDraft))) setEditBase(false); }}><Save size={12} /> Lưu</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setEditBase(false); setErr(""); }}>Hủy</button>
+            </div>
+          ) : <strong>{formatVND(base)}</strong>}
+        </div>
+        <div className="vp-cell">
+          <span className="dim">Điều chỉnh đã duyệt</span>
+          <strong className={approved > 0 ? "figure-pos" : approved < 0 ? "figure-debt" : ""}>{approved === 0 ? "—" : signed(approved)}</strong>
+          {pending !== 0 && <span className="dim vp-pend">Chờ duyệt: {signed(pending)} (chưa tính)</span>}
+        </div>
+        <div className="vp-cell vp-total">
+          <span className="dim">{kind === "opp" ? "Giá trị hiện tại" : "Giá trị hợp đồng hiện tại"}</span>
+          <strong>{formatVND(total)}</strong>
+        </div>
+      </div>
+
+      {changes.length > 0 && (
+        <div className="vp-list">
+          {changes.map((c) => {
+            const canDecide = isBOD && c.status === "proposed";
+            const canDelete = c.status !== "approved" && !readOnly && (isBOD || c.by === myName);
+            return (
+              <div className="vp-row" key={c.id}>
+                <div className="vp-main">
+                  <div className="vp-title">{c.title}{c.phase === "opp" && <span className="vp-tag">từ giai đoạn cơ hội</span>}</div>
+                  <div className="dim vp-sub">
+                    {c.date} · {c.by || "—"}{c.byRole ? ` (${c.byRole})` : ""}{c.decidedBy ? ` → ${c.status === "rejected" ? "từ chối" : "duyệt"}: ${c.decidedBy}` : ""}
+                    {c.reason ? ` · ${c.reason}` : ""}
+                  </div>
+                </div>
+                <strong className={`vp-amt ${c.delta > 0 ? "figure-pos" : "figure-debt"}`}>{signed(c.delta)}</strong>
+                <span className={`vp-pill vp-${c.status}`}>{STATUS[c.status]}</span>
+                <div className="vp-act">
+                  {canDecide && !readOnly && <button className="btn btn-primary btn-sm" onClick={() => run(approveValueChange(doc, c.id, myName, todayISO()))}><Check size={12} /> Duyệt</button>}
+                  {canDecide && !readOnly && <button className="btn btn-outline btn-sm" onClick={() => run(rejectValueChange(doc, c.id, myName, todayISO()))}>Từ chối</button>}
+                  {canDelete && <button className="icon-btn" title="Xoá đề xuất" onClick={() => { setErr(""); onChange(removeValueChange(doc, c.id)); }}><Trash2 size={13} /></button>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {changes.length === 0 && <div className="empty-note" style={{ padding: "10px 0 0" }}>Chưa có điều chỉnh/phát sinh nào — giá trị đang bằng giá trị gốc.</div>}
+
+      {err && <div className="vp-err">{err}</div>}
+
+      {readOnly ? (
+        readOnlyNote && <div className="dim" style={{ fontSize: 12, marginTop: 10 }}>{readOnlyNote}</div>
+      ) : (
+        <div className="vp-form">
+          <div className="vp-form-head"><strong>Thêm điều chỉnh / phát sinh</strong><span className="dim">{isBOD ? "BOD có thể ghi nhận & duyệt luôn" : "Gửi đề xuất — BOD sẽ duyệt"}</span></div>
+          <div className="vp-form-row">
+            <div className="vp-seg">
+              <button type="button" className={sign > 0 ? "on up" : ""} onClick={() => setSign(1)}>+ Tăng</button>
+              <button type="button" className={sign < 0 ? "on down" : ""} onClick={() => setSign(-1)}>− Giảm</button>
+            </div>
+            <NumberInput className="input input-sm vp-amount" value={amount} onChange={setAmount} placeholder="Số tiền (₫)" />
+          </div>
+          <div className="vp-presets">
+            {VALUE_CHANGE_PRESETS.map((p) => <button type="button" key={p} className="chip" onClick={() => setTitle(p)}>{p}</button>)}
+          </div>
+          <div className="vp-form-row">
+            <input className="input input-sm" style={{ flex: 2 }} placeholder="Nội dung (chọn mẫu hoặc gõ)" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <input className="input input-sm" style={{ flex: 2 }} placeholder="Lý do / ghi chú (không bắt buộc)" value={reason} onChange={(e) => setReason(e.target.value)} />
+          </div>
+          <div className="form-actions" style={{ justifyContent: "flex-start" }}>
+            <button className="btn btn-outline btn-sm" onClick={() => submit(false)}><Plus size={13} /> Gửi đề xuất</button>
+            {isBOD && <button className="btn btn-primary btn-sm" onClick={() => submit(true)}><Check size={13} /> Ghi nhận &amp; duyệt luôn</button>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OpportunityDetail({ opportunity, currentRole, myName, onValueChange, onToggleGate, onAdvance, onSendBack, onWon, onLost, onDelete, goToProject }) {
   const [showLostForm, setShowLostForm] = useState(false);
   const [lostReason, setLostReason] = useState("");
   const isBOD = currentRole === "BOD";
@@ -559,12 +684,15 @@ function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, 
       </div>
 
       <div className="pd-payment panel-sub">
-        <div className="pd-payment-figures">
-          <div><span className="dim">Giá trị ước tính</span><strong>{formatVND(opportunity.value)}</strong></div>
+        <div className="pd-payment-figures" style={{ marginTop: 0 }}>
           <div><span className="dim">Ngày tạo</span><strong>{opportunity.createdAt}</strong></div>
         </div>
         {opportunity.note && <div className="pd-scope" style={{ marginTop: 10 }}><p>{opportunity.note}</p></div>}
       </div>
+
+      <ValuePanel doc={opportunity} kind="opp" currentRole={currentRole} myName={myName} onChange={onValueChange}
+        readOnly={opportunity.status !== "open"}
+        readOnlyNote={opportunity.status === "won" ? "Cơ hội đã WON — mọi điều chỉnh tiếp theo được ghi nhận ở dự án." : "Cơ hội đã LOST — không điều chỉnh giá trị."} />
 
       {opportunity.status === "won" && opportunity.wonProjectCode && (
         <div className="kickoff-box" style={{ marginBottom: 16 }}>
@@ -606,7 +734,7 @@ function OpportunityDetail({ opportunity, currentRole, onToggleGate, onAdvance, 
   );
 }
 
-function OpportunitiesTab({ opportunities, customers, currentRole, selectedId, setSelectedId, addOpportunity, toggleGate, advanceOpportunity, sendBackOpportunity, markWon, markLost, removeOpportunity, goToProject }) {
+function OpportunitiesTab({ opportunities, customers, currentRole, myName, saveOppDoc, selectedId, setSelectedId, addOpportunity, toggleGate, advanceOpportunity, sendBackOpportunity, markWon, markLost, removeOpportunity, goToProject }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("open");
   const filtered = opportunities.filter((o) => filter === "all" ? true : o.status === filter);
@@ -653,7 +781,7 @@ function OpportunitiesTab({ opportunities, customers, currentRole, selectedId, s
         </div>
         <div className="split-right">
           {selected ? (
-            <OpportunityDetail opportunity={selected} currentRole={currentRole}
+            <OpportunityDetail opportunity={selected} currentRole={currentRole} myName={myName} onValueChange={saveOppDoc}
               onToggleGate={(stageId, idx) => toggleGate(selected.id, stageId, idx)}
               onAdvance={() => advanceOpportunity(selected.id)}
               onSendBack={(reason) => sendBackOpportunity(selected.id, reason)}
@@ -677,8 +805,6 @@ function EditProjectInfoForm({ project, customers, onCancel, onSave }) {
   const [customerChoice, setCustomerChoice] = useState(project.customerId || "__custom__");
   const [customCustomerName, setCustomCustomerName] = useState(project.customerName);
   const [scope, setScope] = useState(project.scope);
-  const [contractValue, setContractValue] = useState(project.contractValue);
-
   const submit = () => {
     const isCustom = customerChoice === "__custom__";
     const cust = !isCustom ? customers.find((c) => c.id === customerChoice) : null;
@@ -686,7 +812,7 @@ function EditProjectInfoForm({ project, customers, onCancel, onSave }) {
       name: name.trim() || project.name,
       customerId: isCustom ? null : customerChoice,
       customerName: isCustom ? (customCustomerName.trim() || project.customerName) : cust.company,
-      scope: scope.trim(), contractValue: Number(contractValue) || 0,
+      scope: scope.trim(),
     });
   };
 
@@ -703,7 +829,7 @@ function EditProjectInfoForm({ project, customers, onCancel, onSave }) {
         )}
       </div>
       <div className="form-row"><label>Phạm vi công việc</label><textarea className="input" rows={2} value={scope} onChange={(e) => setScope(e.target.value)} /></div>
-      <div className="form-row"><label>Giá trị hợp đồng (₫)</label><NumberInput className="input" value={contractValue} onChange={setContractValue} /></div>
+      <div className="dim" style={{ fontSize: 12, marginBottom: 10 }}>Giá trị hợp đồng được sửa ở khối “Điều chỉnh &amp; phát sinh” trong trang dự án (giữ được lịch sử và tự cập nhật các đợt thanh toán).</div>
       <div className="form-actions">
         <button className="btn btn-ghost btn-sm" onClick={onCancel}>Hủy</button>
         <button className="btn btn-primary btn-sm" onClick={submit}><Save size={14} /> Lưu thông tin</button>
@@ -964,7 +1090,7 @@ function WorkItemsBlock({ project, addWorkItem, updateWorkItem, removeWorkItem }
   );
 }
 
-function ProjectDetail({ project, customers, currentRole, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, goToTimeline, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
+function ProjectDetail({ project, customers, currentRole, myName, saveProjectDoc, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, goToTimeline, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
   const [editingInfo, setEditingInfo] = useState(false);
   const isBOD = currentRole === "BOD";
   useEffect(() => setEditingInfo(false), [project.id]);
@@ -1001,6 +1127,8 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
       </div>
 
       <div className="pd-scope"><h4>Phạm vi công việc</h4><p>{project.scope}</p></div>
+
+      <ValuePanel doc={project} kind="project" currentRole={currentRole} myName={myName} onChange={saveProjectDoc} />
 
       <PlanSummaryBlock project={project} isBOD={isBOD} updateProject={updateProject} goToTimeline={goToTimeline} />
 
@@ -1041,7 +1169,7 @@ function ProjectDetail({ project, customers, currentRole, updateProject, toggleG
   );
 }
 
-function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelectedCode, createProject, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, goToTimeline, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
+function ProjectsTab({ projects, customers, currentRole, myName, saveProjectDoc, selectedCode, setSelectedCode, createProject, updateProject, toggleGate, advanceProject, sendBackProject, addRevenueEvent, addCost, updateCost, goToTimeline, addWorkItem, updateWorkItem, removeWorkItem, archiveProject }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("active");
   const filtered = projects.filter((p) => filter === "all" ? true : p.status === filter);
@@ -1088,7 +1216,7 @@ function ProjectsTab({ projects, customers, currentRole, selectedCode, setSelect
         </div>
         <div className="split-right">
           {selected ? (
-            <ProjectDetail project={selected} customers={customers} currentRole={currentRole} updateProject={updateProject}
+            <ProjectDetail project={selected} customers={customers} currentRole={currentRole} myName={myName} saveProjectDoc={saveProjectDoc} updateProject={updateProject}
               toggleGate={toggleGate} advanceProject={advanceProject} sendBackProject={sendBackProject}
               addRevenueEvent={addRevenueEvent} addCost={addCost} updateCost={updateCost}
               goToTimeline={goToTimeline} addWorkItem={addWorkItem} updateWorkItem={updateWorkItem}
@@ -1189,7 +1317,7 @@ function PaymentMilestonesBlock({ project, isBOD, addPaymentMilestone, removePay
                 return (
                   <tr key={m.id}>
                     <td>{m.label}</td><td>{m.pct}%</td>
-                    <td>{formatVND((project.contractValue || 0) * m.pct / 100)}</td>
+                    <td>{formatVND(milestoneAmount(project, i))}{m.lockedAmount != null && <span className="vp-tag" title="Đợt đã thu đủ — số tiền được giữ nguyên khi giá trị hợp đồng thay đổi">đã chốt</span>}</td>
                     <td>{m.plannedDate}</td>
                     <td className={STATUS_CLASS[st]}>{STATUS_LABEL[st]}</td>
                     {isBOD && <td><button className="icon-btn" onClick={() => removePaymentMilestone(m.id)}><Trash2 size={13} /></button></td>}
@@ -1229,7 +1357,7 @@ function ArTab({ projects, isBOD, goToProject, addPaymentMilestone, removePaymen
     const next = nextPaymentMilestone(r.p);
     if (!next) return s;
     const d = daysBetween(todayISO(), next.milestone.plannedDate);
-    return (d >= 0 && d <= 30) ? s + Math.round((r.p.contractValue || 0) * next.milestone.pct / 100) : s;
+    return (d >= 0 && d <= 30) ? s + milestoneAmount(r.p, next.index) : s;
   }, 0);
 
   const STATUS_LABEL = { overdue: "Quá hạn", upcoming: "Sắp tới hạn", ontrack: "Đúng hạn", none: "Chưa thiết lập đợt" };
@@ -2508,7 +2636,8 @@ export default function App() {
     wonInFlightRef.current.add(id);
     const now = todayISO();
     const code = nextProjectCode(projects);
-    const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: opp.value, createdAt: now });
+    const project = makeProject(code, { name: opp.title, customerId: opp.customerId, customerName: opp.customerName, scope: opp.note, contractValue: valueTotal(opp), baseValue: valueBase(opp),
+      valueChanges: (opp.valueChanges || []).map((c) => ({ ...c, phase: "opp" })), createdAt: now });
     const updatedOpp = {
       ...opp, status: "won", wonProjectCode: code,
       stages: { ...opp.stages, [OPP_DECISION_STAGE_ID]: { ...opp.stages[OPP_DECISION_STAGE_ID], state: "done", completedAt: now, completedBy: currentRole } },
@@ -2535,6 +2664,10 @@ export default function App() {
     if (!isBOD) { alert("Chỉ BOD được xoá cơ hội."); return; }
     removeDoc("opportunities", id).catch(onWriteError);
   }, [isBOD]);
+
+  // Lưu nguyên document sau khi điều chỉnh Giá trị công trình (xem ValuePanel)
+  const saveOppDoc = useCallback((d) => { saveDoc("opportunities", d.id, d).catch(onWriteError); }, []);
+  const saveProjectDoc = useCallback((d) => { saveDoc("projects", d.id, d).catch(onWriteError); }, []);
 
   /* ---- project actions ---- */
   const updateProject = useCallback((id, patch) => {
@@ -2830,13 +2963,13 @@ export default function App() {
             warrantyRecords={warrantyRecords} goToProject={goToProject} goToOpportunity={goToOpportunity} goToEmployees={goToEmployees} />
         )}
         {tab === "opportunities" && (
-          <OpportunitiesTab opportunities={opportunities} customers={customers} currentRole={currentRole}
+          <OpportunitiesTab opportunities={opportunities} customers={customers} currentRole={currentRole} myName={myDisplayName} saveOppDoc={saveOppDoc}
             selectedId={selectedOpportunityId} setSelectedId={setSelectedOpportunityId} addOpportunity={addOpportunity}
             toggleGate={toggleOppGate} advanceOpportunity={advanceOpportunity} sendBackOpportunity={sendBackOpportunity}
             markWon={markWon} markLost={markLost} removeOpportunity={removeOpportunity} goToProject={goToProject} />
         )}
         {tab === "projects" && (
-          <ProjectsTab projects={projects} customers={customers} currentRole={currentRole}
+          <ProjectsTab projects={projects} customers={customers} currentRole={currentRole} myName={myDisplayName} saveProjectDoc={saveProjectDoc}
             selectedCode={selectedProjectCode} setSelectedCode={setSelectedProjectCode} createProject={createProject}
             updateProject={updateProject} toggleGate={toggleProjectGate} advanceProject={advanceProject}
             sendBackProject={sendBackProject} addRevenueEvent={addRevenueEvent} addCost={addCost} updateCost={updateCost}
