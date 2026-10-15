@@ -509,6 +509,69 @@ export function distributeDates(from, to, weights) {
 // known = ngày kết thúc (thực tế) của các bước đã xong (bước 1..cur-1)
 // skips[i] = bước i+1 được BỎ QUA (0 ngày): hạn = hạn bước liền trước, không chiếm thời gian.
 const normSkips = (skips) => Array.from({ length: PLAN_STAGE_COUNT }, (_, i) => !!(skips && skips[i]));
+// ---- BƯỚC CHẠY SONG SONG ----
+// plan.starts[i] = ngày bắt đầu RIÊNG của bước i+1 (null = nối tiếp ngay khi bước trước kết thúc, như mặc định).
+// Bước có ngày bắt đầu riêng được tính theo kiểu "gồm cả ngày bắt đầu" (từ 05/10 tới 07/10 = 3 ngày); bước nối tiếp tính như cũ (hạn − hạn bước trước).
+const maxEnd = (ends) => ends.reduce((m, x) => (dayNum(x) > dayNum(m) ? x : m), ends[0]);
+export const planStarts = (plan) => (plan.starts && plan.starts.length === PLAN_STAGE_COUNT ? plan.starts : Array(PLAN_STAGE_COUNT).fill(null));
+const firstActiveIdx = (plan) => { const sk = plan.skips || []; let k = 0; while (k < PLAN_STAGE_COUNT - 1 && sk[k]) k += 1; return k; };
+// Ngày bắt đầu thực tế của bước idx: bước làm việc đầu tiên = ngày bắt đầu kế hoạch; bước có ngày riêng = ngày đó; còn lại = hạn bước liền trước.
+export function stepStart(plan, idx) {
+  if (plan.skips && plan.skips[idx]) return plan.ends[idx];
+  if (idx === firstActiveIdx(plan)) return plan.start;
+  const own = planStarts(plan)[idx];
+  if (own) return own;
+  return idx > 0 ? plan.ends[idx - 1] : plan.start;
+}
+export const stepIsOwnStart = (plan, idx) => !(plan.skips && plan.skips[idx]) && idx !== firstActiveIdx(plan) && !!planStarts(plan)[idx];
+// Số ngày hiển thị của bước (0 = bỏ qua)
+export function stepDays(plan, idx) {
+  if (plan.skips && plan.skips[idx]) return 0;
+  const d = diffDays(stepStart(plan, idx), plan.ends[idx]);
+  return stepIsOwnStart(plan, idx) ? d + 1 : d;
+}
+// Hạn kết thúc khi nhập số ngày n ≥ 1
+export function stepEndForDays(plan, idx, n) {
+  const a = stepStart(plan, idx);
+  return addDaysISO(a, stepIsOwnStart(plan, idx) ? Math.max(0, n - 1) : n);
+}
+// Hạn nhỏ nhất (dayNum) cho bước idx: không trước bước liền trước; bước nối tiếp phải ≥ +1 ngày, bước có ngày riêng ≥ ngày bắt đầu của nó.
+const minEndOf = (plan, idx) => {
+  const own = planStarts(plan)[idx];
+  if (idx !== firstActiveIdx(plan) && own) return dayNum(own); // bước có ngày bắt đầu riêng: chỉ cần không trước ngày bắt đầu của nó
+  return dayNum(stepStart(plan, idx)) + 1;
+};
+// hạn lớn nhất của bước idx khi KHÔNG dời các bước sau: bước kế tiếp nối tiếp (không có ngày riêng) bắt đầu đúng ngày hạn này → hạn này phải trước hạn của nó ≥ 1 ngày
+const maxEndOf = (plan, idx) => {
+  const sk = plan.skips || [];
+  const st = planStarts(plan);
+  let k = idx + 1;
+  while (k < PLAN_STAGE_COUNT && sk[k]) k += 1;
+  if (k >= PLAN_STAGE_COUNT) return dayNum(plan.ends[idx]) + 3650;
+  return st[k] ? dayNum(plan.ends[idx]) + 3650 : dayNum(plan.ends[k]) - 1;
+};
+// Đặt ngày bắt đầu RIÊNG cho 1 bước (không ảnh hưởng bước khác). newStart=null → quay về nối tiếp bước trước.
+export function setStageStart(plan, idx, newStart) {
+  if (plan.skips && plan.skips[idx]) return plan;
+  if (idx === firstActiveIdx(plan)) return newStart ? setPlanStart(plan, newStart, false) : plan;
+  const starts = planStarts(plan).slice();
+  if (!newStart) starts[idx] = null;
+  else starts[idx] = dayNum(newStart) > dayNum(plan.ends[idx]) ? plan.ends[idx] : newStart; // không cho bắt đầu sau hạn
+  return { ...plan, starts };
+}
+// Các bước đang chạy chồng lên nhau: trả về [{idx, with:[idx...]}]
+export function planOverlaps(plan) {
+  const sk = plan.skips || [];
+  const out = [];
+  for (let i = 1; i < PLAN_STAGE_COUNT; i++) {
+    if (sk[i]) continue;
+    const a = dayNum(stepStart(plan, i));
+    const w = [];
+    for (let j = 0; j < i; j++) if (!sk[j] && dayNum(plan.ends[j]) > a) w.push(j);
+    if (w.length) out.push({ idx: i, with: w });
+  }
+  return out;
+}
 export function buildPlan(start, end, cur, known, skips) {
   cur = Math.max(1, Math.min(PLAN_STAGE_COUNT, cur));
   known = (known || []).slice(0, cur - 1);
@@ -529,7 +592,7 @@ export function buildPlan(start, end, cur, known, skips) {
       else { prev = dist[k++]; ends.push(prev); }
     }
   }
-  return { start, end: ends[PLAN_STAGE_COUNT - 1], baseEnd: end, ends, skips: sk };
+  return { start, end: maxEnd(ends), baseEnd: end, ends, skips: sk, starts: Array(PLAN_STAGE_COUNT).fill(null) };
 }
 const prevEndOf = (plan, idx) => (idx > 0 ? plan.ends[idx - 1] : plan.start);
 // Dời hạn bước idx (0-based) đi `delta` ngày — mọi bước sau dời theo. Không cho bước idx lùi sát/qua bước trước.
@@ -540,10 +603,12 @@ export function shiftPlanFrom(plan, idx, delta) {
   while (i0 > 0 && sk[i0]) i0 -= 1;
   if (sk[i0]) return plan; // tất cả các bước từ đầu tới đây đều bỏ qua — không có gì để dời
   const ends = plan.ends.slice();
-  const lo = (i0 > 0 ? dayNum(ends[i0 - 1]) : dayNum(plan.start)) + 1;
+  const starts = planStarts(plan).slice();
+  const lo = Math.max(minEndOf(plan, i0), 0);
   const d = Math.max(delta, lo - dayNum(ends[i0]));
   for (let i = i0; i < ends.length; i++) ends[i] = addDaysISO(ends[i], d);
-  return { ...plan, ends, end: ends[ends.length - 1] };
+  for (let i = i0 + 1; i < ends.length; i++) if (starts[i]) starts[i] = addDaysISO(starts[i], d); // bước chạy song song dời theo
+  return { ...plan, ends, starts, end: maxEnd(ends) };
 }
 // Đổi hạn 1 bước. cascade=true → các bước sau dời theo; false → chỉ bước đó (kẹp giữa 2 bước kề).
 export function applyStageEnd(plan, idx, newDate, cascade) {
@@ -552,14 +617,14 @@ export function applyStageEnd(plan, idx, newDate, cascade) {
   const old = plan.ends[idx];
   if (!newDate || newDate === old) return plan;
   if (cascade || idx === PLAN_STAGE_COUNT - 1) return shiftPlanFrom(plan, idx, diffDays(old, newDate));
-  const lo = (idx > 0 ? dayNum(plan.ends[idx - 1]) : dayNum(plan.start)) + 1;
+  const lo = minEndOf(plan, idx);
   let k = idx + 1;
   while (k < PLAN_STAGE_COUNT && sk[k]) k += 1; // bước làm việc kế tiếp
-  const hi = (k < PLAN_STAGE_COUNT ? dayNum(plan.ends[k]) : dayNum(plan.ends[idx]) + 3650) - 1;
+  const hi = maxEndOf(plan, idx);
   const e = Math.max(lo, Math.min(hi, dayNum(newDate)));
   const ends = plan.ends.slice();
   for (let j = idx; j < k; j++) ends[j] = numDay(e); // gồm cả các bước bỏ qua liền sau
-  return { ...plan, ends, end: ends[ends.length - 1] };
+  return { ...plan, ends, end: maxEnd(ends) };
 }
 // Đặt NGÀY BẮT ĐẦU của kế hoạch (cho phép ngày trong quá khứ — dự án làm gấp, nhập thông tin bù sau).
 // cascade=true → toàn bộ hạn các bước dời theo (giữ nguyên số ngày mỗi bước); false → giữ nguyên hạn, chỉ đổi điểm bắt đầu.
@@ -569,15 +634,16 @@ export function setPlanStart(plan, newStart, cascade) {
   let first = 0;
   while (first < PLAN_STAGE_COUNT - 1 && sk[first]) first += 1; // bước làm việc đầu tiên
   const ends = plan.ends.slice();
+  const starts = planStarts(plan).slice();
   let start = newStart;
   if (cascade) {
     const d = diffDays(plan.start, newStart);
-    for (let i = 0; i < ends.length; i++) ends[i] = addDaysISO(ends[i], d);
+    for (let i = 0; i < ends.length; i++) { ends[i] = addDaysISO(ends[i], d); if (starts[i]) starts[i] = addDaysISO(starts[i], d); }
   } else {
     if (dayNum(start) >= dayNum(ends[first])) start = addDaysISO(ends[first], -1);
     for (let i = 0; i < first; i++) ends[i] = start;
   }
-  return { ...plan, start, ends, end: ends[ends.length - 1] };
+  return { ...plan, start, ends, starts, end: maxEnd(ends) };
 }
 // Bật/tắt "bỏ qua" cho bước idx. skip=true → 0 ngày. skip=false → `days` ngày (≥1).
 // cascade=true → các bước sau dời theo (rút/kéo dài kế hoạch); false → giữ nguyên hạn các bước sau.
@@ -586,7 +652,9 @@ export function setStageSkip(plan, idx, skip, days, cascade) {
   if (sk[idx] === !!skip && skip) return plan;
   const pe = dayNum(prevEndOf(plan, idx));
   const ends = plan.ends.slice();
+  const starts = planStarts(plan).slice();
   const oldEnd = dayNum(ends[idx]);
+  starts[idx] = null; // bật/tắt bỏ qua → bước nối tiếp bước trước như mặc định
   sk[idx] = !!skip;
   let newEnd = skip ? pe : pe + Math.max(1, Math.round(days) || 1);
   let k = idx + 1;
@@ -594,35 +662,49 @@ export function setStageSkip(plan, idx, skip, days, cascade) {
   if (!cascade && !skip && k < PLAN_STAGE_COUNT) newEnd = Math.min(newEnd, Math.max(pe + 1, dayNum(ends[k]) - 1));
   if (cascade) {
     const delta = newEnd - oldEnd;
-    for (let i = idx; i < ends.length; i++) ends[i] = numDay(dayNum(ends[i]) + delta);
+    for (let i = idx; i < ends.length; i++) { ends[i] = numDay(dayNum(ends[i]) + delta); if (i > idx && starts[i]) starts[i] = addDaysISO(starts[i], delta); }
   } else {
     for (let i = idx; i < k; i++) ends[i] = numDay(newEnd);
   }
-  return { ...plan, ends, end: ends[ends.length - 1], skips: sk };
+  return { ...plan, ends, starts, end: maxEnd(ends), skips: sk };
 }
 
-// Đọc kế hoạch của dự án → { start, ends[12], end, baseEnd, confirmed } hoặc null nếu chưa có kế hoạch đầy đủ.
+// Đọc kế hoạch của dự án → { start, ends[12], starts[12], derived[12], end, baseEnd, confirmed } hoặc null nếu chưa có kế hoạch đầy đủ.
+// Bước có hạng mục trong "Tiến độ thi công" (project.schedule) → ngày bắt đầu / kết thúc lấy TỪ bảng đó (derived[i] = {s,e,pc,n}).
 export function projectPlan(project) {
   const start = project.plannedStart;
   if (!start) return null;
   const skips = [];
   const ends = [];
+  const starts = [];
+  const derived = [];
   for (let id = 1; id <= PLAN_STAGE_COUNT; id++) {
     const st = project.stages?.[id];
     const sk = !!(st && st.skipped);
     skips.push(sk);
-    const d = st && st.state === "done" && st.completedAt ? String(st.completedAt).slice(0, 10) : st?.plannedDate;
+    const isDone = !!(st && st.state === "done" && st.completedAt);
+    const dv = !sk && !(st && st.state === "done") ? schedDerive(project, id) : null;
+    derived.push(dv);
+    const d = isDone ? String(st.completedAt).slice(0, 10) : dv ? dv.e : st?.plannedDate;
     if (!d && !sk) return null;
     ends.push(d || start);
+    starts.push(sk ? null : dv ? dv.s : (st && st.plannedStart) || null);
   }
-  // chuẩn hoá: bước bỏ qua = hạn bước liền trước (0 ngày); bước còn lại tăng dần (≥ +1 ngày)
+  const first = (() => { let k = 0; while (k < PLAN_STAGE_COUNT - 1 && skips[k]) k += 1; return k; })();
+  // chuẩn hoá: bước bỏ qua = hạn bước liền trước (0 ngày); bước nối tiếp bắt đầu khi bước trước kết thúc nên hạn ≥ +1 ngày;
+  // bước có ngày bắt đầu riêng (song song) chỉ cần hạn không trước ngày bắt đầu của nó.
   for (let i = 0; i < ends.length; i++) {
-    if (skips[i]) { ends[i] = i ? ends[i - 1] : start; continue; }
-    const lo = (i ? dayNum(ends[i - 1]) : dayNum(start)) + 1;
-    if (dayNum(ends[i]) < lo) ends[i] = numDay(lo);
+    const pe = i ? dayNum(ends[i - 1]) : dayNum(start);
+    if (skips[i]) { ends[i] = numDay(pe); starts[i] = null; continue; }
+    if (i === first) starts[i] = null;
+    const own = starts[i];
+    if (own) { if (dayNum(ends[i]) < dayNum(own)) ends[i] = own; continue; }
+    if (dayNum(ends[i]) < pe + 1) ends[i] = numDay(pe + 1);
   }
-  const end = ends[PLAN_STAGE_COUNT - 1];
-  return { start, ends, skips, end, baseEnd: project.planBaseEnd || end, confirmed: project.planConfirmed !== false };
+  const end = maxEnd(ends);
+  let minStart = start;
+  starts.forEach((x) => { if (x && dayNum(x) < dayNum(minStart)) minStart = x; });
+  return { start, minStart, ends, starts, skips, derived, end, baseEnd: project.planBaseEnd || end, confirmed: project.planConfirmed !== false };
 }
 // Ghi kế hoạch vào các trường của dự án (trả về patch cho updateProject). Bước đã xong giữ nguyên plannedDate gốc.
 export function planToPatch(project, plan, confirmed, by) {
@@ -630,7 +712,8 @@ export function planToPatch(project, plan, confirmed, by) {
   for (let id = 1; id <= PLAN_STAGE_COUNT; id++) {
     const st = stages[id];
     if (st && st.state !== "done") {
-      stages[id] = { ...st, plannedDate: plan.ends[id - 1], skipped: plan.skips ? !!plan.skips[id - 1] : !!st.skipped };
+      const ps = plan.starts ? plan.starts[id - 1] || null : null;
+      stages[id] = { ...st, plannedDate: plan.ends[id - 1], plannedStart: ps, skipped: plan.skips ? !!plan.skips[id - 1] : !!st.skipped };
     }
   }
   const patch = { plannedStart: plan.start, plannedEnd: plan.end, planBaseEnd: plan.baseEnd || plan.end, planConfirmed: confirmed, stages };
@@ -707,18 +790,174 @@ export function planProgressPct(project, today = todayISO()) {
   const sk = plan ? plan.skips : [];
   const w = PLAN_WEIGHTS.map((x, i) => (sk[i] ? 0 : x)); // bước bỏ qua không tính vào tiến độ
   const total = w.reduce((a, b) => a + b, 0) || 1;
-  let pct = w.slice(0, cur - 1).reduce((a, b) => a + b, 0);
-  if (plan) {
-    const s0 = cur > 1 ? plan.ends[cur - 2] : plan.start, e = plan.ends[cur - 1];
-    pct += w[cur - 1] * Math.max(0, Math.min(1, diffDays(s0, today) / Math.max(1, diffDays(s0, e))));
+  let pct = 0;
+  for (let i = 0; i < PLAN_STAGE_COUNT; i++) {
+    if (!w[i]) continue;
+    if (i + 1 < cur) { pct += w[i]; continue; }
+    if (!plan) { if (i + 1 === cur) pct += 0; continue; }
+    const dv = plan.derived[i];
+    if (dv) { pct += (w[i] * dv.pc) / 100; continue; }          // bước lấy từ Tiến độ thi công: dùng % thực tế của hạng mục
+    const own = stepIsOwnStart(plan, i);
+    if (i + 1 === cur || own) {                                  // bước hiện tại / bước chạy song song: theo tỷ lệ thời gian đã qua
+      const s0 = stepStart(plan, i), e = plan.ends[i];
+      pct += w[i] * Math.max(0, Math.min(1, diffDays(s0, today) / Math.max(1, diffDays(s0, e))));
+    }
   }
   return Math.round((pct * 100) / total);
 }
+// ======================================================================
+//  TIẾN ĐỘ THI CÔNG — bảng hạng mục chi tiết kiểu Excel của từng dự án
+//  project.schedule = { groups: [{id,name}], items: [{id,gid,t,s,e,who,st,pc,note}] }
+//    s/e = ngày bắt đầu/kết thúc (YYYY-MM-DD) · who = bên thực hiện · st = thuộc bước nào (1..12) · pc = % hoàn thành 0..100
+//  Các bước có hạng mục (st) → ngày bắt đầu/kết thúc/% của bước đó TỰ LẤY từ bảng này (xem projectPlan / schedDerive).
+//  "Số ngày" = ngày làm việc, KHÔNG tính Chủ nhật (như file Excel).
+// ======================================================================
+export const SCHED_WHO = ["NHÀ THẦU", "CĐT", "NHÀ THẦU & CĐT", "BP", "KD", "Khác"];
+export const SCHED_STAGE_IDS = [2, 3, 4, 5, 6, 7, 8, 9, 10]; // các bước chọn được ở cột "Thuộc bước"
+const dowOf = (iso) => new Date(dayNum(iso) * 86400000).getUTCDay();
+export const isSunday = (iso) => dowOf(iso) === 0;
+export function schedWdays(s, e) {
+  let c = 0;
+  for (let x = dayNum(s); x <= dayNum(e); x++) if (new Date(x * 86400000).getUTCDay() !== 0) c += 1;
+  return c;
+}
+// Ngày kết thúc khi làm n ngày làm việc kể từ s (ngày s tính là ngày 1; n ≤ 0 → trả về s)
+export function schedEndFromDays(s, n) {
+  if (!(n >= 1)) return s;
+  let c = 0, x = dayNum(s);
+  for (let guard = 0; guard < 4000; guard++, x++) {
+    if (new Date(x * 86400000).getUTCDay() !== 0) { c += 1; if (c === n) return numDay(x); }
+  }
+  return numDay(x);
+}
+export function makeSchedGroup(name) { return { id: uid("sg"), name: name || "Nhóm mới" }; }
+export function makeSchedItem(data) {
+  const s = data.s || todayISO();
+  const e = data.e && data.e >= s ? data.e : s;
+  return {
+    id: data.id || uid("si"), gid: data.gid, t: data.t || "Hạng mục mới", s, e,
+    who: data.who || "NHÀ THẦU", st: data.st || 7, pc: Math.max(0, Math.min(100, Math.round(+data.pc || 0))), note: data.note || "",
+  };
+}
+export const schedItems = (project) => (project.schedule && project.schedule.items) || [];
+export const schedGroups = (project) => (project.schedule && project.schedule.groups) || [];
+export const schedWeight = (it) => Math.max(1, schedWdays(it.s, it.e));
+export function schedPct(items) {
+  if (!items.length) return 0;
+  const w = items.reduce((a, i) => a + schedWeight(i), 0);
+  return Math.round(items.reduce((a, i) => a + schedWeight(i) * (i.pc || 0), 0) / w);
+}
+export function schedRange(items) {
+  if (!items.length) return null;
+  return { s: items.reduce((m, i) => (i.s < m ? i.s : m), items[0].s), e: items.reduce((m, i) => (i.e > m ? i.e : m), items[0].e) };
+}
+// Bước stageId lấy ngày & % từ các hạng mục gắn với nó
+export function schedDerive(project, stageId) {
+  const a = schedItems(project).filter((i) => i.st === stageId);
+  if (!a.length) return null;
+  const r = schedRange(a);
+  return { s: r.s, e: r.e, pc: schedPct(a), n: a.length };
+}
+export const schedIsLate = (it, today) => (it.pc || 0) < 100 && it.e < today;
+// Hạng mục chưa xong đang chạy hôm nay / trong khoảng, hoặc đã trễ
+export function schedDueItems(project, from, to) {
+  return schedItems(project).filter((i) => (i.pc || 0) < 100 && (i.e < from || (i.s <= to && i.e >= from)));
+}
+const STAGE_GUESS = [
+  [/bàn giao/i, 10], [/test|dặm vá|nghiệm thu|qc|kiểm tra/i, 8], [/sản xuất|xưởng|gia công/i, 6],
+  [/bản vẽ|shop|duyệt|mẫu|trình|thiết kế/i, 3],
+];
+export function guessSchedStage(text) {
+  for (const [re, id] of STAGE_GUESS) if (re.test(text)) return id;
+  return 7;
+}
+const ROMAN = /^(I|II|III|IV|V|VI|VII|VIII|IX|X)[.):]?$/i;
+function parseVNDate(x, today) {
+  let m = String(x).trim().match(/^(\d{1,2})\s*[/.\-]\s*(\d{1,2})(?:\s*[/.\-]\s*(\d{2,4}))?$/);
+  if (m) {
+    let y = m[3] ? +m[3] : +today.slice(0, 4);
+    if (y < 100) y += 2000;
+    const mo = +m[2], d = +m[1];
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  m = String(x).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? m[0] : null;
+}
+// Dán từ Excel: các cột phân cách bằng Tab (hoặc ≥2 dấu cách): STT · Hạng mục · Bắt đầu · Kết thúc · Thời lượng · Thực hiện
+// Dòng chỉ có "I", "II", "III" (+ tên nhóm) = nhóm. Trả về [{name, items:[{t,s,e,who,st,pc,note}]}]
+export function parseSchedule(text, today) {
+  const out = [];
+  let g = null;
+  String(text || "").split(/\r?\n/).forEach((raw) => {
+    if (!raw.trim()) return;
+    const c = raw.split(/\t| {2,}/).map((x) => x.trim()).filter((x) => x !== "");
+    if (!c.length) return;
+    if (ROMAN.test(c[0]) && c.length <= 2) { g = { name: (c[0].toUpperCase().replace(/[.):]$/, "") + (c[1] ? " · " + c[1] : "")), items: [] }; out.push(g); return; }
+    const dates = c.map((x) => parseVNDate(x, today)).filter(Boolean);
+    if (!dates.length) return;
+    if (!g) { g = { name: "Hạng mục", items: [] }; out.push(g); }
+    const isNum = (x) => /^\d+([.,]\d+)?$/.test(x);
+    const whoCell = c.find((x) => SCHED_WHO.some((w) => w.toUpperCase() === x.toUpperCase()));
+    const t = c.find((x, i) => i < 3 && !isNum(x) && !parseVNDate(x, today) && !/ngày$/i.test(x) && !SCHED_WHO.some((w) => w.toUpperCase() === x.toUpperCase())) || c[1] || c[0];
+    const s = dates[0];
+    const e = dates[1] && dates[1] >= s ? dates[1] : s;
+    g.items.push({ t, s, e, who: whoCell ? SCHED_WHO.find((w) => w.toUpperCase() === whoCell.toUpperCase()) : "NHÀ THẦU", st: guessSchedStage(t), pc: 0, note: "" });
+  });
+  return out.filter((x) => x.items.length);
+}
+// Mẫu nhanh — rút từ bảng tiến độ thực tế (Cơm Tấm Má Tư – CN5). Ngày tương đối so với ngày bắt đầu.
+const TPL_BASE = "2026-10-05";
+const TPL_FB = [
+  ["I · Chuẩn bị", [
+    ["Chốt bản vẽ, shop draw", "2026-10-05", "2026-10-11", "NHÀ THẦU & CĐT", 3],
+    ["Trình & duyệt mẫu vật tư", "2026-10-05", "2026-10-11", "NHÀ THẦU & CĐT", 3]]],
+  ["II · XDCB + MEP", [
+    ["Tháo dỡ", "2026-10-06", "2026-10-07", "NHÀ THẦU", 7],
+    ["MEP âm tường, âm sàn, thả trần", "2026-10-08", "2026-10-13", "NHÀ THẦU", 7],
+    ["Thi công phần vách thạch cao", "2026-10-11", "2026-10-11", "NHÀ THẦU", 7],
+    ["Thi công PCCC, điện lạnh & điện nhẹ", "2026-10-12", "2026-10-14", "NHÀ THẦU", 7],
+    ["Sơn nước hoàn thiện + các phần sơn khác", "2026-10-15", "2026-10-21", "NHÀ THẦU", 7],
+    ["Thi công công tác hoàn thiện sàn", "2026-10-20", "2026-10-21", "NHÀ THẦU", 7],
+    ["Lắp vách trang trí & mặt dựng băng hiệu", "2026-10-21", "2026-10-22", "NHÀ THẦU", 7],
+    ["Đấu nối lắp đặt thiết bị", "2026-10-23", "2026-10-24", "NHÀ THẦU", 7],
+    ["Thi công cửa phòng kho & tay nắm cửa mặt tiền", "2026-10-25", "2026-10-25", "NHÀ THẦU", 7],
+    ["Vệ sinh thô", "2026-10-25", "2026-10-25", "NHÀ THẦU", 7]]],
+  ["III · Thi công hoàn thiện", [
+    ["Sản xuất phần nội thất", "2026-10-11", "2026-10-23", "NHÀ THẦU", 6],
+    ["Lắp đặt phần nội thất & sắp xếp cửa hàng", "2026-10-26", "2026-10-28", "NHÀ THẦU", 7],
+    ["Lắp đặt phần quảng cáo, MKT & thiết bị hỗ trợ khác", "2026-10-28", "2026-10-29", "NHÀ THẦU", 7],
+    ["Chạy test hệ thống + dặm vá (nếu có)", "2026-10-29", "2026-10-30", "NHÀ THẦU", 8],
+    ["Vệ sinh công nghiệp", "2026-10-30", "2026-10-30", "NHÀ THẦU", 7],
+    ["Bàn giao", "2026-10-31", "2026-10-31", "CĐT", 10]]],
+];
+export const SCHED_TEMPLATES = [
+  { id: "fb", label: "Cửa hàng F&B — mẫu Cơm Tấm Má Tư (~27 ngày)", scale: 1 },
+  { id: "fb-s", label: "Cửa hàng nhỏ — rút gọn (~14 ngày)", scale: 0.5 },
+  { id: "fb-l", label: "Cửa hàng lớn — kéo dài (~40 ngày)", scale: 1.5 },
+  { id: "blank", label: "Bảng trống (3 nhóm: Chuẩn bị / XDCB + MEP / Hoàn thiện)", scale: 0 },
+];
+export function schedFromTemplate(tplId, start) {
+  const tpl = SCHED_TEMPLATES.find((x) => x.id === tplId) || SCHED_TEMPLATES[0];
+  const groups = [], items = [];
+  TPL_FB.forEach(([name, rows]) => {
+    const g = makeSchedGroup(name);
+    groups.push(g);
+    if (!tpl.scale) return;
+    rows.forEach(([t, s0, e0, who, st]) => {
+      const so = Math.round(diffDays(TPL_BASE, s0) * tpl.scale), eo = Math.max(so, Math.round(diffDays(TPL_BASE, e0) * tpl.scale));
+      items.push(makeSchedItem({ gid: g.id, t, s: addDaysISO(start, so), e: addDaysISO(start, eo), who, st, pc: 0 }));
+    });
+  });
+  return { groups, items };
+}
+
 // Sau khi 1 bước vừa được hoàn thành: nếu hoàn thành TRỄ hơn hạn của bước đó → chia lại các bước còn lại
 // từ hôm nay tới ngày kết thúc (kế hoạch giữ nguyên ngày kết thúc). Hoàn thành đúng/sớm hạn → giữ nguyên.
 export function replanAfterAdvance(oldProject, newProject) {
   const old = projectPlan(oldProject);
   if (!old) return newProject;
+  if (old.starts.some(Boolean) || (oldProject.schedule?.items || []).length) return newProject; // kế hoạch có bước chạy song song / có bảng thi công: không tự chia lại, người dùng chỉnh tay
   const stageId = oldProject.currentStage;
   if (stageId > PLAN_STAGE_COUNT || newProject.currentStage === stageId) return newProject;
   const actual = newProject.stages[stageId]?.completedAt;
