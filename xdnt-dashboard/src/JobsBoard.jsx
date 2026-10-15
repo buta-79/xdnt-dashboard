@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import {
   todayISO, addDaysISO, diffDays, PLAN_STAGE_COUNT, PROJECT_STAGES,
   makeJob, makeNote, jobIsLate, parseJobDates, parseJobList,
+  schedItems, schedDueItems, schedIsLate,
 } from "./data/seed";
 const stageName = (id) => PROJECT_STAGES.find((s) => s.id === id)?.label || "";
 
@@ -70,6 +71,24 @@ export function jobOps(p, updateProject, today) {
       save([...jobs, makeJob({ text, stage, date: hasDate ? dt.date : (day || today), due: hasDate ? dt.due : (day || today) }, today)]);
     },
   };
+}
+
+// Hạng mục thi công (từ bảng "Tiến độ thi công") đang chạy hôm nay / trễ — sửa nhanh % tại chỗ
+function SiteRow({ it, day, onPct }) {
+  const late = schedIsLate(it, day);
+  const [v, setV] = useState(String(it.pc));
+  useEffect(() => { setV(String(it.pc)); }, [it.pc]);
+  const commit = () => { const n = Math.max(0, Math.min(100, Math.round(+v) || 0)); if (n !== it.pc) onPct(it.id, n); else setV(String(it.pc)); };
+  return (
+    <div className={`jb-job jb-site ${it.pc >= 100 ? "done" : ""}`}>
+      <span className="jb-sico" title="Hạng mục thi công">▣</span>
+      <span className="jb-tx">{it.t}<span className="jb-chip stage" style={{ marginLeft: 6 }}>B{it.st} {stageName(it.st)}</span>{it.note ? <span className="jb-hint" style={{ marginLeft: 6 }}>· {it.note}</span> : null}</span>
+      <span className={`jb-d ${late ? "late" : ""}`}>{late ? `Trễ ${diffDays(it.e, day)} ngày` : it.s === it.e ? fd(it.s) : `${fd(it.s)}–${fd(it.e)}`}</span>
+      <span className="jb-acts" style={{ opacity: 1 }}>
+        <input className="input input-sm jb-pc" type="number" min="0" max="100" value={v} onChange={(e) => setV(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />%
+      </span>
+    </div>
+  );
 }
 
 /* ---- Panel nhỏ trong chi tiết dự án ở Gantt ---- */
@@ -172,8 +191,12 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
     return j.date <= hi && j.due >= day;
   };
   const scope = pid ? active.filter((p) => p.id === pid) : active;
-  const groups = scope.map((p) => ({ p, items: (p.jobs || []).filter(visible).sort((a, b) => Number(!!a.done) - Number(!!b.done) || a.due.localeCompare(b.due)) }))
-    .filter((g) => pid || g.items.length > 0);
+  const siteFor = (p) => {
+    const hi = pid || range === "all" ? "9999-12-31" : range === "week" ? addDaysISO(day, 6) : day;
+    return schedDueItems(p, pid || range === "all" ? "0000-01-01" : day, hi).sort((a, b) => a.s.localeCompare(b.s));
+  };
+  const groups = scope.map((p) => ({ p, items: (p.jobs || []).filter(visible).sort((a, b) => Number(!!a.done) - Number(!!b.done) || a.due.localeCompare(b.due)), site: siteFor(p) }))
+    .filter((g) => pid || g.items.length > 0 || g.site.length > 0);
 
   const allJobs = scope.flatMap((p) => p.jobs || []);
   const shown = groups.flatMap((g) => g.items);
@@ -235,8 +258,10 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
       <div className="jb-grid">
         <div className="jb-card">
           {groups.length === 0 && <div className="jb-empty">Không có việc nào trong khoảng này.<br /><span className="jb-hint">Dùng “Dán danh sách” hoặc thêm việc cho từng dự án.</span></div>}
-          {groups.map(({ p, items }) => {
+          {groups.map(({ p, items, site }) => {
             const all = p.jobs || [];
+            const setPct = (id, n) => updateProject(p.id, { schedule: { ...(p.schedule || {}), items: schedItems(p).map((x) => (x.id === id ? { ...x, pc: n } : x)) } });
+            const lateSite = site.filter((x) => schedIsLate(x, day)).length;
             const dn = all.filter((j) => j.done).length;
             const late = items.filter((j) => jobIsLate(j, day)).length;
             const ops = jobOps(p, updateProject, today);
@@ -247,12 +272,14 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
                   <span className="jb-nm" onClick={() => { setPid(p.id); }}>{p.name}</span>
                   <span className="jb-cu">{p.customerName}</span>
                   {stg && <span className="jb-chip stage">{stg.label}</span>}
-                  {late > 0 && <span className="jb-chip late">{late} việc trễ</span>}
+                  {late + lateSite > 0 && <span className="jb-chip late">{late + lateSite} việc trễ</span>}
                   <span className="jb-cnt">{dn}/{all.length} xong</span>
                 </div>
                 {(p.notes || []).filter((n) => !n.resolved && n.type === "note").map((n) => (
                   <div className="jb-note" key={n.id}>⚑ <span><b>Lưu ý:</b> {n.text}</span></div>
                 ))}
+                {site.length > 0 && <div className="jb-sitehd">Thi công theo tiến độ · {site.length} hạng mục</div>}
+                {site.map((it) => <SiteRow key={it.id} it={it} day={day} onPct={setPct} />)}
                 {items.map((j) => <JobRow key={j.id} j={j} day={day} onToggle={ops.toggle} onStar={ops.star} onDel={ops.del} />)}
                 <QuickAdd onAdd={(t) => ops.add(t, day)} />
               </div>
@@ -272,6 +299,7 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
           <div className="jb-card jb-pad">
             <h4>Liên kết với các phần khác</h4>
             <div className="jb-hint" style={{ lineHeight: 1.6 }}>
+              • Hạng mục ở tab <b>Tiến độ thi công</b> đang chạy hôm nay (hoặc trễ) tự hiện ở đây — sửa % ngay tại chỗ.<br />
               • Dòng “⇒ …” khi dán thành <b>Lưu ý</b> của dự án (xem ở panel chi tiết trên Gantt).<br />
               • Việc trễ và việc ★ hiện trong danh sách <b>Cần xử lý hôm nay</b> của lịch Gantt.<br />
               • Dự án chỉ lưu trữ được khi không còn việc mở.
