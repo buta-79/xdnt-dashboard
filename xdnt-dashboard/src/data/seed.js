@@ -528,7 +528,7 @@ export const stepIsOwnStart = (plan, idx) => !(plan.skips && plan.skips[idx]) &&
 export function stepDays(plan, idx) {
   if (plan.skips && plan.skips[idx]) return 0;
   const d = diffDays(stepStart(plan, idx), plan.ends[idx]);
-  return stepIsOwnStart(plan, idx) ? d + 1 : d;
+  return stepIsOwnStart(plan, idx) ? d + 1 : Math.max(1, d); // xong ngay trong ngày bắt đầu (hạn = ngày bắt đầu) vẫn tính 1 ngày
 }
 // Hạn kết thúc khi nhập số ngày n ≥ 1
 export function stepEndForDays(plan, idx, n) {
@@ -539,7 +539,7 @@ export function stepEndForDays(plan, idx, n) {
 const minEndOf = (plan, idx) => {
   const own = planStarts(plan)[idx];
   if (idx !== firstActiveIdx(plan) && own) return dayNum(own); // bước có ngày bắt đầu riêng: chỉ cần không trước ngày bắt đầu của nó
-  return dayNum(stepStart(plan, idx)) + 1;
+  return dayNum(stepStart(plan, idx)); // cho phép hoàn thành ngay trong ngày bắt đầu
 };
 // hạn lớn nhất của bước idx khi KHÔNG dời các bước sau: bước kế tiếp nối tiếp (không có ngày riêng) bắt đầu đúng ngày hạn này → hạn này phải trước hạn của nó ≥ 1 ngày
 const maxEndOf = (plan, idx) => {
@@ -548,7 +548,7 @@ const maxEndOf = (plan, idx) => {
   let k = idx + 1;
   while (k < PLAN_STAGE_COUNT && sk[k]) k += 1;
   if (k >= PLAN_STAGE_COUNT) return dayNum(plan.ends[idx]) + 3650;
-  return st[k] ? dayNum(plan.ends[idx]) + 3650 : dayNum(plan.ends[k]) - 1;
+  return st[k] ? dayNum(plan.ends[idx]) + 3650 : dayNum(plan.ends[k]);
 };
 // Đặt ngày bắt đầu RIÊNG cho 1 bước (không ảnh hưởng bước khác). newStart=null → quay về nối tiếp bước trước.
 export function setStageStart(plan, idx, newStart) {
@@ -640,7 +640,7 @@ export function setPlanStart(plan, newStart, cascade) {
     const d = diffDays(plan.start, newStart);
     for (let i = 0; i < ends.length; i++) { ends[i] = addDaysISO(ends[i], d); if (starts[i]) starts[i] = addDaysISO(starts[i], d); }
   } else {
-    if (dayNum(start) >= dayNum(ends[first])) start = addDaysISO(ends[first], -1);
+    if (dayNum(start) > dayNum(ends[first])) start = ends[first];
     for (let i = 0; i < first; i++) ends[i] = start;
   }
   return { ...plan, start, ends, starts, end: maxEnd(ends) };
@@ -659,7 +659,7 @@ export function setStageSkip(plan, idx, skip, days, cascade) {
   let newEnd = skip ? pe : pe + Math.max(1, Math.round(days) || 1);
   let k = idx + 1;
   while (k < PLAN_STAGE_COUNT && sk[k]) k += 1;
-  if (!cascade && !skip && k < PLAN_STAGE_COUNT) newEnd = Math.min(newEnd, Math.max(pe + 1, dayNum(ends[k]) - 1));
+  if (!cascade && !skip && k < PLAN_STAGE_COUNT) newEnd = Math.min(newEnd, Math.max(pe + 1, dayNum(ends[k])));
   if (cascade) {
     const delta = newEnd - oldEnd;
     for (let i = idx; i < ends.length; i++) { ends[i] = numDay(dayNum(ends[i]) + delta); if (i > idx && starts[i]) starts[i] = addDaysISO(starts[i], delta); }
@@ -699,7 +699,7 @@ export function projectPlan(project) {
     if (i === first) starts[i] = null;
     const own = starts[i];
     if (own) { if (dayNum(ends[i]) < dayNum(own)) ends[i] = own; continue; }
-    if (dayNum(ends[i]) < pe + 1) ends[i] = numDay(pe + 1);
+    if (dayNum(ends[i]) < pe) ends[i] = numDay(pe);
   }
   const end = maxEnd(ends);
   let minStart = start;
@@ -837,6 +837,8 @@ export function makeSchedItem(data) {
   return {
     id: data.id || uid("si"), gid: data.gid, t: data.t || "Hạng mục mới", s, e,
     who: data.who || "NHÀ THẦU", st: data.st || 7, pc: Math.max(0, Math.min(100, Math.round(+data.pc || 0))), note: data.note || "",
+    // vết hoàn thành / dời lịch: ngày xong thực tế, kế hoạch gốc (s0/e0) để biết sớm – trễ bao nhiêu, % trước khi bấm xong (pc0)
+    doneAt: data.doneAt || null, s0: data.s0 || null, e0: data.e0 || null, pc0: data.pc0 == null ? null : data.pc0,
   };
 }
 export const schedItems = (project) => (project.schedule && project.schedule.items) || [];
@@ -859,6 +861,52 @@ export function schedDerive(project, stageId) {
   return { s: r.s, e: r.e, pc: schedPct(a), n: a.length };
 }
 export const schedIsLate = (it, today) => (it.pc || 0) < 100 && it.e < today;
+// Sớm (+) / trễ (−) bao nhiêu ngày so với kế hoạch gốc (0 nếu chưa có kế hoạch gốc hoặc không đổi)
+export const schedVariance = (it) => (it.e0 && it.e0 !== it.e ? diffDays(it.e, it.e0) : 0);
+// Ngày kết thúc theo kế hoạch gốc của cả bảng (để biết đã rút ngắn bao nhiêu)
+export function schedBaseEnd(items) {
+  if (!items.length) return null;
+  return items.reduce((m, i) => { const e = i.e0 || i.e; return e > m ? e : m; }, items[0].e0 || items[0].e);
+}
+// Đánh dấu hoàn thành / bỏ hoàn thành 1 hạng mục. Xong sớm → rút ngắn ngày kết thúc của hạng mục về ngày xong thực tế
+// (giữ kế hoạch gốc ở s0/e0). Trả về { items, early } — early = số ngày xong sớm (>0), trễ (<0), 0 nếu đúng hạn / bỏ hoàn thành.
+export function schedSetDone(items, id, done, today) {
+  let early = 0;
+  const out = items.map((it) => {
+    if (it.id !== id) return it;
+    if (done) {
+      if (it.doneAt && (it.pc || 0) >= 100) return it;
+      const x = { ...it, pc0: (it.pc || 0) < 100 ? (it.pc || 0) : (it.pc0 == null ? 0 : it.pc0), pc: 100, doneAt: today, s0: it.s0 || it.s, e0: it.e0 || it.e };
+      if (today < x.s) { x.s = today; x.e = today; } else x.e = today;
+      early = diffDays(x.e, x.e0);
+      return x;
+    }
+    const pc0 = it.pc0 == null ? 0 : Math.min(99, it.pc0);
+    return { ...it, pc: pc0, doneAt: null, s: it.s0 || it.s, e: it.e0 || it.e, s0: null, e0: null, pc0: null };
+  });
+  return { items: out, early };
+}
+// Sau khi 1 hạng mục xong sớm `early` ngày: dời các hạng mục NỐI SAU nó (bắt đầu từ ngày kế hoạch gốc kết thúc của nó, chưa xong) sớm lên tương ứng,
+// giữ nguyên số ngày làm việc, không sớm hơn ngày hạng mục kia xong thực tế và không sớm hơn hôm nay.
+export function schedPullForward(items, id, early, today) {
+  const src = items.find((i) => i.id === id);
+  if (!src || !(early > 0)) return { items, moved: 0 };
+  const orig = src.e0 || src.e;
+  let moved = 0;
+  const floor = src.e > today ? src.e : today;
+  const out = items.map((it) => {
+    if (it.id === id || (it.pc || 0) >= 100 || it.doneAt || it.s < orig) return it;
+    let ns = addDaysISO(it.s, -early);
+    if (ns < floor) ns = floor;
+    if (isSunday(ns)) ns = addDaysISO(ns, 1);
+    if (ns >= it.s) return it;
+    const n = schedWdays(it.s, it.e);
+    const ne = n >= 1 ? schedEndFromDays(ns, n) : ns;
+    moved += 1;
+    return { ...it, s0: it.s0 || it.s, e0: it.e0 || it.e, s: ns, e: ne };
+  });
+  return { items: out, moved };
+}
 // Hạng mục chưa xong đang chạy hôm nay / trong khoảng, hoặc đã trễ
 export function schedDueItems(project, from, to) {
   return schedItems(project).filter((i) => (i.pc || 0) < 100 && (i.e < from || (i.s <= to && i.e >= from)));
