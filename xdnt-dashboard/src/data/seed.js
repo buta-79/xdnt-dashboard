@@ -839,6 +839,7 @@ export function makeSchedItem(data) {
     who: data.who || "NHÀ THẦU", st: data.st || 7, pc: Math.max(0, Math.min(100, Math.round(+data.pc || 0))), note: data.note || "",
     // vết hoàn thành / dời lịch: ngày xong thực tế, kế hoạch gốc (s0/e0) để biết sớm – trễ bao nhiêu, % trước khi bấm xong (pc0)
     doneAt: data.doneAt || null, s0: data.s0 || null, e0: data.e0 || null, pc0: data.pc0 == null ? null : data.pc0,
+    sp: data.sp || null, ep: data.ep || null, dv: data.dv == null ? null : data.dv, bd: data.bd || null,
   };
 }
 export const schedItems = (project) => (project.schedule && project.schedule.items) || [];
@@ -861,37 +862,82 @@ export function schedDerive(project, stageId) {
   return { s: r.s, e: r.e, pc: schedPct(a), n: a.length };
 }
 export const schedIsLate = (it, today) => (it.pc || 0) < 100 && it.e < today;
-// Sớm (+) / trễ (−) bao nhiêu ngày so với kế hoạch gốc (0 nếu chưa có kế hoạch gốc hoặc không đổi)
-export const schedVariance = (it) => (it.e0 && it.e0 !== it.e ? diffDays(it.e, it.e0) : 0);
+// Sớm (+) / trễ (−) bao nhiêu ngày:
+//  - hạng mục ĐÃ XONG: so với hạn kế hoạch của nó TẠI THỜI ĐIỂM bấm xong (it.dv) — không tính các lần dời lịch trước đó
+//    (đang chờ BOD duyệt ngày xong → 0, chưa kết luận sớm/trễ)
+//  - hạng mục CHƯA XONG nhưng đã được dời lịch: so với kế hoạch gốc (e0)
+export const schedPending = (it) => !!(it.bd && it.bd.status === "pending");
+export function schedVariance(it) {
+  if (it.doneAt) return schedPending(it) ? 0 : (it.dv || 0);
+  return it.e0 && it.e0 !== it.e ? diffDays(it.e, it.e0) : 0;
+}
 // Ngày kết thúc theo kế hoạch gốc của cả bảng (để biết đã rút ngắn bao nhiêu)
 export function schedBaseEnd(items) {
   if (!items.length) return null;
-  return items.reduce((m, i) => { const e = i.e0 || i.e; return e > m ? e : m; }, items[0].e0 || items[0].e);
+  const be = (i) => (i.doneAt && i.ep == null ? i.e : (i.e0 || i.e)); // hạng mục xong từ bản cũ không có vết đáng tin → coi như không có kế hoạch gốc
+  return items.reduce((m, i) => (be(i) > m ? be(i) : m), be(items[0]));
 }
-// Đánh dấu hoàn thành / bỏ hoàn thành 1 hạng mục. Xong sớm → rút ngắn ngày kết thúc của hạng mục về ngày xong thực tế
-// (giữ kế hoạch gốc ở s0/e0). Trả về { items, early } — early = số ngày xong sớm (>0), trễ (<0), 0 nếu đúng hạn / bỏ hoàn thành.
-export function schedSetDone(items, id, done, today) {
-  let early = 0;
+// Đánh dấu hoàn thành / bỏ hoàn thành 1 hạng mục.
+//  opts = { date, reason, by, role }:
+//   - date = ngày hoàn thành THỰC TẾ (mặc định hôm nay; chọn ngày đã qua nếu quên cập nhật).
+//   - Ngày đã qua do BOD nhập → áp dụng ngay. Do KD/BP nhập → ghi nhận xong hôm nay và CHỜ BOD DUYỆT ngày thực tế (it.bd.status = "pending").
+//  Xong sớm → hạn của hạng mục rút về ngày xong thực tế. Trả về { items, early, pending }
+//  (early > 0 sớm, < 0 trễ so với hạn kế hoạch lúc bấm xong; 0 nếu đúng hạn / đang chờ duyệt / bỏ hoàn thành).
+export function schedSetDone(items, id, done, today, opts) {
+  const o = opts || {};
+  let early = 0, pending = false;
   const out = items.map((it) => {
     if (it.id !== id) return it;
     if (done) {
       if (it.doneAt && (it.pc || 0) >= 100) return it;
-      const x = { ...it, pc0: (it.pc || 0) < 100 ? (it.pc || 0) : (it.pc0 == null ? 0 : it.pc0), pc: 100, doneAt: today, s0: it.s0 || it.s, e0: it.e0 || it.e };
-      if (today < x.s) { x.s = today; x.e = today; } else x.e = today;
-      early = diffDays(x.e, x.e0);
+      let want = o.date && o.date <= today ? o.date : today;
+      const back = want < today;
+      pending = back && o.role !== "BOD";
+      const actual = pending ? today : want;
+      const x = { ...it, pc0: (it.pc || 0) < 100 ? (it.pc || 0) : (it.pc0 == null ? 0 : it.pc0), pc: 100, doneAt: actual, sp: it.s, ep: it.e, s0: it.s0 || it.s, e0: it.e0 || it.e };
+      if (actual < x.s) { x.s = actual; x.e = actual; } else x.e = actual;
+      x.dv = diff2(x.e, it.e);
+      x.bd = back ? { date: want, reason: o.reason || "", by: o.by || o.role || "", at: today, status: pending ? "pending" : "approved", decidedBy: pending ? null : (o.by || o.role || ""), decidedAt: pending ? null : today } : null;
+      early = pending ? 0 : x.dv;
       return x;
     }
+    // bỏ hoàn thành: trả về lịch trước khi bấm xong (kế hoạch gốc chỉ giữ lại nếu hạng mục từng được dời)
     const pc0 = it.pc0 == null ? 0 : Math.min(99, it.pc0);
-    return { ...it, pc: pc0, doneAt: null, s: it.s0 || it.s, e: it.e0 || it.e, s0: null, e0: null, pc0: null };
+    const ns = it.sp || it.s0 || it.s, ne = it.ep || it.e0 || it.e;
+    const keep = it.e0 && it.e0 !== ne;
+    return { ...it, pc: pc0, doneAt: null, s: ns, e: ne, sp: null, ep: null, dv: null, bd: null, pc0: null, s0: keep ? it.s0 : null, e0: keep ? it.e0 : null };
   });
-  return { items: out, early };
+  return { items: out, early, pending };
 }
-// Sau khi 1 hạng mục xong sớm `early` ngày: dời các hạng mục NỐI SAU nó (bắt đầu từ ngày kế hoạch gốc kết thúc của nó, chưa xong) sớm lên tương ứng,
+const diff2 = (a, b) => diffDays(a, b); // b − a: dương = a sớm hơn b
+// BOD duyệt / từ chối ngày hoàn thành thực tế đang chờ. Duyệt → ngày xong = ngày đã nhập; từ chối → giữ nguyên là xong hôm nay đã ghi.
+export function schedDecide(items, id, approve, by, today) {
+  return items.map((it) => {
+    if (it.id !== id || !schedPending(it)) return it;
+    if (!approve) return { ...it, bd: { ...it.bd, status: "rejected", decidedBy: by || "BOD", decidedAt: today } };
+    const actual = it.bd.date;
+    const x = { ...it, doneAt: actual, s: it.sp || it.s, e: it.ep || it.e };
+    if (actual < x.s) { x.s = actual; x.e = actual; } else x.e = actual;
+    x.dv = diff2(x.e, it.ep || it.e);
+    x.bd = { ...it.bd, status: "approved", decidedBy: by || "BOD", decidedAt: today };
+    return x;
+  });
+}
+export const schedPendingItems = (items) => items.filter(schedPending);
+// Câu thông báo sau khi bấm hoàn thành / bỏ hoàn thành
+export function schedDoneMessage(name, done, r) {
+  if (!done) return `Đã bỏ đánh dấu xong “${name}” — trả về kế hoạch trước khi bấm xong`;
+  if (r.pending) return `Đã ghi nhận “${name}” xong — ngày thực tế đã nhập đang CHỜ BOD DUYỆT (chưa tính sớm/trễ)`;
+  if (r.early > 0) return `Xong “${name}” sớm ${r.early} ngày so với kế hoạch — hạn hạng mục đã rút ngắn`;
+  if (r.early < 0) return `Xong “${name}” trễ ${-r.early} ngày so với kế hoạch`;
+  return `Xong “${name}” đúng tiến độ`;
+}
+// Sau khi 1 hạng mục xong sớm `early` ngày: dời các hạng mục NỐI SAU nó (bắt đầu từ ngày hạn kế hoạch của nó lúc bấm xong, chưa xong) sớm lên tương ứng,
 // giữ nguyên số ngày làm việc, không sớm hơn ngày hạng mục kia xong thực tế và không sớm hơn hôm nay.
 export function schedPullForward(items, id, early, today) {
   const src = items.find((i) => i.id === id);
   if (!src || !(early > 0)) return { items, moved: 0 };
-  const orig = src.e0 || src.e;
+  const orig = src.ep || src.e;
   let moved = 0;
   const floor = src.e > today ? src.e : today;
   const out = items.map((it) => {
@@ -907,6 +953,7 @@ export function schedPullForward(items, id, early, today) {
   });
   return { items: out, moved };
 }
+
 // Hạng mục chưa xong đang chạy hôm nay / trong khoảng, hoặc đã trễ
 export function schedDueItems(project, from, to) {
   return schedItems(project).filter((i) => (i.pc || 0) < 100 && (i.e < from || (i.s <= to && i.e >= from)));
