@@ -4,6 +4,7 @@ import {
   SCHED_WHO, SCHED_STAGE_IDS, SCHED_TEMPLATES, isSunday,
   schedWdays, schedEndFromDays, schedPct, schedRange, schedDerive, schedIsLate, schedItems, schedGroups,
   makeSchedItem, makeSchedGroup, parseSchedule, schedFromTemplate, projectPlan,
+  schedSetDone, schedPullForward, schedVariance, schedBaseEnd,
 } from "./data/seed";
 
 /* ---------------------------------------------------------------------- */
@@ -21,6 +22,13 @@ const fdy = (s) => (s ? fd(s) + "/" + s.slice(0, 4) : "—");
 const WD = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const stageName = (id) => PROJECT_STAGES.find((s) => s.id === id)?.label || "";
 const DW = 24;
+// Nhãn sớm / trễ so với kế hoạch gốc của 1 hạng mục
+export function varLabel(it) {
+  const v = schedVariance(it);
+  if (!v) return null;
+  const done = !!it.doneAt;
+  return { cls: v > 0 ? "early" : "late", t: v > 0 ? `${done ? "xong sớm" : "dời sớm"} ${v} ngày` : `${done ? "xong trễ" : "dời trễ"} ${-v} ngày` };
+}
 
 // Ô nhập: chốt khi rời ô / Enter / sau 0,8 giây — không ghi Firestore từng phím gõ
 function Cell({ type, value, onCommit, className, min, max, placeholder, title }) {
@@ -132,8 +140,10 @@ function SiteGantt({ groups, items, collapsed, today }) {
     gs.forEach((it, ii) => rows.push({
       k: it.id, h: 26,
       name: <div className="ss-gname" title={it.t}><span className="n">{ii + 1}</span>{it.t}</div>,
-      bar: <div className={`ss-gbar ${it.pc >= 100 ? "dn" : schedIsLate(it, today) ? "late" : ""}`} title={`${it.t}: ${fd(it.s)} → ${fd(it.e)} · ${it.pc}%`}
-        style={{ left: (d2n(it.s) - mn) * DW, width: Math.max(DW - 2, (diff(it.s, it.e) + 1) * DW - 2) }}><i style={{ width: `${it.pc}%` }} /><span>{it.pc}%</span></div>,
+      bar: <>
+        {it.e0 && it.e0 !== it.e && <div className="ss-gbase" title={`Kế hoạch gốc: ${fd(it.s0 || it.s)} → ${fd(it.e0)}`} style={{ left: (d2n(it.s0 || it.s) - mn) * DW, width: Math.max(DW - 2, (diff(it.s0 || it.s, it.e0) + 1) * DW - 2) }} />}
+        <div className={`ss-gbar ${it.pc >= 100 ? "dn" : schedIsLate(it, today) ? "late" : ""}`} title={`${it.t}: ${fd(it.s)} → ${fd(it.e)} · ${it.pc}%${varLabel(it) ? " · " + varLabel(it).t : ""}`}
+          style={{ left: (d2n(it.s) - mn) * DW, width: Math.max(DW - 2, (diff(it.s, it.e) + 1) * DW - 2) }}><i style={{ width: `${it.pc}%` }} /><span>{it.pc}%</span></div></>,
     }));
   });
   return (
@@ -175,22 +185,49 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
   const items = p ? schedItems(p) : [];
   const plan = useMemo(() => (p ? projectPlan(p) : null), [p]);
 
-  const say = (msg, undo) => { setToast({ msg, undo: undo || null }); clearTimeout(tRef.current); tRef.current = setTimeout(() => setToast(null), 6500); };
-  // Ghi cả bảng schedule lên dự án, kèm Hoàn tác
-  const save = (next, msg) => {
+  const say = (msg, undo, act) => { setToast({ msg, undo: undo || null, act: act || null }); clearTimeout(tRef.current); tRef.current = setTimeout(() => setToast(null), act ? 12000 : 6500); };
+  // Ghi cả bảng schedule lên dự án, kèm Hoàn tác (và 1 nút hành động tuỳ chọn)
+  const save = (next, msg, act) => {
     const prev = p.schedule || null;
     updateProject(p.id, { schedule: next });
-    if (msg) say(msg, () => { updateProject(p.id, { schedule: prev }); setToast(null); });
+    if (msg) say(msg, () => { updateProject(p.id, { schedule: prev }); setToast(null); }, act);
+  };
+  // Tick hoàn thành / bỏ hoàn thành. Xong sớm → rút ngắn hạng mục, và đề nghị dời các hạng mục nối sau
+  const toggleDone = (id, done) => {
+    const r = schedSetDone(items, id, done, today);
+    const it = items.find((x) => x.id === id);
+    let msg, act = null;
+    if (!done) msg = `Đã bỏ đánh dấu xong “${it.t}” — trả về kế hoạch gốc`;
+    else if (r.early > 0) {
+      msg = `Xong “${it.t}” sớm ${r.early} ngày — ngày kết thúc hạng mục đã rút ngắn về hôm nay`;
+      act = { label: `Dời các hạng mục sau sớm ${r.early} ngày`, fn: () => {
+        const q = schedPullForward(r.items, id, r.early, today);
+        updateProject(p.id, { schedule: { groups, items: q.items } });
+        say(q.moved ? `Đã dời sớm ${q.moved} hạng mục nối sau — thời gian bàn giao rút ngắn tương ứng` : "Không có hạng mục nào dời được (đã sát hôm nay hoặc không nối sau)", () => { updateProject(p.id, { schedule: { groups, items: r.items } }); setToast(null); });
+      } };
+    } else if (r.early < 0) msg = `Xong “${it.t}” trễ ${-r.early} ngày so với kế hoạch`;
+    else msg = `Đã đánh dấu xong “${it.t}”`;
+    save({ groups, items: r.items }, msg, act);
   };
   const setItems = (nextItems, msg) => save({ groups, items: nextItems }, msg);
   const editItem = (id, f, v) => {
+    if (f === "pc") {
+      const n = Math.round(+v) || 0;
+      const cur = items.find((x) => x.id === id);
+      if (n >= 100) { if (!(cur.doneAt && cur.pc >= 100)) toggleDone(id, true); return; }  // 100% = hoàn thành
+      if (cur.doneAt) { // đang ở trạng thái xong mà hạ % → bỏ hoàn thành rồi đặt %
+        const r = schedSetDone(items, id, false, today);
+        setItems(r.items.map((x) => (x.id === id ? { ...x, pc: Math.max(0, n) } : x)));
+        return;
+      }
+    }
     setItems(items.map((it) => {
       if (it.id !== id) return it;
       const x = { ...it };
       if (f === "s") { x.s = v; if (x.e < x.s) x.e = x.s; }
       else if (f === "e") { x.e = v < x.s ? x.s : v; }
       else if (f === "d") { x.e = schedEndFromDays(x.s, Math.max(0, Math.round(+v) || 0)); }
-      else if (f === "pc") x.pc = Math.max(0, Math.min(100, Math.round(+v) || 0));
+      else if (f === "pc") x.pc = Math.max(0, Math.min(99, Math.round(+v) || 0));
       else if (f === "st") x.st = +v;
       else x[f] = v;
       return x;
@@ -243,6 +280,7 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
   const total = r ? diff(r.s, r.e) + 1 : 0;
   const left = r ? diff(today, r.e) : 0;
   const nLate = items.filter((i) => schedIsLate(i, today)).length;
+  const baseEnd = schedBaseEnd(items);
   const linked = SCHED_STAGE_IDS.map((id) => ({ id, d: schedDerive(p, id) })).filter((x) => x.d);
 
   return (
@@ -257,6 +295,12 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
           {onOpenPlan && <button className="btn btn-outline btn-sm" onClick={() => onOpenPlan(p.id)}>Xem kế hoạch 12 bước →</button>}
         </div>
         <div className="tl-panel-b">
+          <div className="ss-pills" title="Chuyển nhanh giữa các dự án">
+            {active.map((x) => { const its = schedItems(x), lt = its.filter((i) => schedIsLate(i, today)).length; return (
+              <button key={x.id} className={`ss-pill ${x.id === p.id ? "on" : ""} ${its.length ? "" : "empty"}`} onClick={() => { setPid(x.id); setCollapsed({}); }}>
+                <b>{x.code.slice(5)}</b> {its.length ? `${schedPct(its)}%` : "chưa có bảng"}{lt > 0 && <i className="lt">{lt} trễ</i>}
+              </button>); })}
+          </div>
           <div className="ss-hint" style={{ marginBottom: 8 }}>Bảng hạng mục chi tiết như file Excel của bạn. Các bước <b>Duyệt mẫu / Manufacturing / Construction / QC / Bàn giao</b> trong kế hoạch 12 bước sẽ <b>tự lấy ngày bắt đầu, kết thúc và % tiến độ</b> từ bảng này.</div>
           <div className="ss-tools">
             <button className="btn btn-primary btn-sm" onClick={() => setDlg(true)}>Dán từ Excel</button>
@@ -278,7 +322,7 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
         <>
           <div className="ss-kpis">
             <div className="ss-k"><div className="l">Bắt đầu thi công</div><div className="v">{fdy(r.s)}</div></div>
-            <div className="ss-k"><div className="l">Kết thúc dự kiến</div><div className="v">{fdy(r.e)}</div></div>
+            <div className="ss-k"><div className="l">Kết thúc dự kiến</div><div className="v">{fdy(r.e)}{baseEnd && baseEnd !== r.e && <small style={{ color: baseEnd > r.e ? "var(--green)" : "var(--red)" }}> · {baseEnd > r.e ? `sớm ${diff(r.e, baseEnd)}` : `trễ ${diff(baseEnd, r.e)}`} ngày so với KH gốc</small>}</div></div>
             <div className="ss-k"><div className="l">Hôm nay</div><div className="v">{fd(today)} <small>{today < r.s ? `· còn ${diff(today, r.s)} ngày tới ngày bắt đầu` : `· đã chạy ${dayN} ngày`}</small></div></div>
             <div className="ss-k"><div className="l">Thời hạn triển khai</div><div className="v">{total} <small>ngày{left >= 0 ? ` · còn ${left}` : ` · quá ${-left}`}</small></div></div>
             <div className="ss-k"><div className="l">Tiến độ chung (theo ngày công)</div><div className="v">{pc}%{nLate > 0 && <small style={{ color: "var(--red)" }}> · {nLate} hạng mục trễ</small>}</div></div>
@@ -327,7 +371,7 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
                           const late = schedIsLate(it, today);
                           const now = it.pc < 100 && it.s <= today && it.e >= today;
                           return (
-                            <tr key={it.id} className={now ? "now" : ""}>
+                            <tr key={it.id} className={it.pc >= 100 ? "dn" : now ? "now" : ""}>
                               <td className="c">{ii + 1}</td>
                               <td><Cell type="text" className="input input-sm ss-t" value={it.t} onCommit={(v) => editItem(it.id, "t", v)} /></td>
                               <td><Cell type="date" className="input input-sm ss-d" value={it.s} onCommit={(v) => editItem(it.id, "s", v)} /></td>
@@ -337,7 +381,11 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
                               <td><select className="input input-sm" value={it.st} title="Hạng mục này thuộc bước nào của kế hoạch 12 bước" onChange={(e) => editItem(it.id, "st", e.target.value)}>
                                 {SCHED_STAGE_IDS.includes(it.st) ? null : <option value={it.st}>{it.st}. {stageName(it.st)}</option>}
                                 {SCHED_STAGE_IDS.map((id) => <option key={id} value={id}>{id}. {stageName(id)}</option>)}</select></td>
-                              <td style={{ whiteSpace: "nowrap" }}><Cell type="number" min="0" max="100" className="input input-sm ss-n" value={it.pc} onCommit={(v) => editItem(it.id, "pc", v)} /> %{late && <span className="tl-pill bad" style={{ marginLeft: 6 }}>trễ</span>}</td>
+                              <td style={{ whiteSpace: "nowrap" }}>
+                                <input type="checkbox" className="ss-chk" checked={it.pc >= 100} title="Đánh dấu hoàn thành — xong sớm thì rút ngắn thời gian" onChange={(e) => toggleDone(it.id, e.target.checked)} />
+                                <Cell type="number" min="0" max="100" className="input input-sm ss-n" value={it.pc} onCommit={(v) => editItem(it.id, "pc", v)} /> %
+                                {late && <span className="tl-pill bad" style={{ marginLeft: 6 }}>trễ</span>}
+                                {(() => { const vl = varLabel(it); return vl ? <span className={`ss-var ${vl.cls}`} title={`Kế hoạch gốc: ${fd(it.s0 || it.s)} → ${fd(it.e0)}`}>{vl.t}</span> : null; })()}</td>
                               <td style={{ whiteSpace: "nowrap" }}><Cell type="text" className="input input-sm ss-note" placeholder="Ghi chú" value={it.note} onCommit={(v) => editItem(it.id, "note", v)} /></td>
                               <td><button className="btn btn-ghost btn-sm" title="Xóa hạng mục" onClick={() => delItem(it.id)}>×</button></td>
                             </tr>
@@ -360,7 +408,7 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
       )}
 
       {dlg && <PasteDialog today={today} hasItems={items.length > 0} onClose={() => setDlg(false)} onApply={applyPaste} />}
-      {toast && <div className="tl-toast"><span>{toast.msg}</span>{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>}
+      {toast && <div className="tl-toast"><span>{toast.msg}</span>{toast.act && <button className="ss-act" onClick={() => { const f = toast.act.fn; setToast(null); f(); }}>{toast.act.label}</button>}{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>}
     </div>
   );
 }
