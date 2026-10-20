@@ -1047,6 +1047,47 @@ export function schedFromTemplate(tplId, start) {
   return { groups, items };
 }
 
+/* ---------------------------------------------------------------------- */
+/*  CƠ HỘI BÁN HÀNG — bảng công việc & timeline (cùng mô hình với tiến độ thi công) */
+/*  opportunity.schedule = { groups[], items[] }; item.st = id bước Stage-Gate (OPP_STAGES) */
+/* ---------------------------------------------------------------------- */
+export const OPP_SCHED_WHO = ["KD", "BP", "BOD", "Khách hàng", "Khác"];
+export const OPP_SCHED_STAGE_IDS = [1, 2, 3, 4, 5, 6, 7, 8];
+// [bước, tên nhóm, [[tên việc, ai, số ngày làm việc]...]]
+const OPP_TPL = [
+  [1, "I · Lead", [["Ghi nhận lead, thông tin liên hệ khách", "KD", 1]]],
+  [2, "II · Tiếp cận", [["Liên hệ lần đầu (gọi / nhắn)", "KD", 1], ["Gặp / trao đổi, khách xác nhận quan tâm", "KD", 2]]],
+  [3, "III · Xác định nhu cầu", [["Thu thập nhu cầu, ngân sách dự kiến", "KD", 2], ["Chốt thời gian mong muốn & tiêu chí chọn nhà thầu", "KD", 1]]],
+  [4, "IV · Khảo sát", [["Hẹn lịch khảo sát mặt bằng", "KD", 1], ["Khảo sát, đo đạc hiện trạng", "KD", 2], ["Tổng hợp hồ sơ khảo sát", "BP", 1]]],
+  [5, "V · Concept / Giải pháp", [["Lên concept / giải pháp", "BP", 4], ["Trình bày concept với khách", "KD", 1], ["Chỉnh sửa theo góp ý của khách", "BP", 2]]],
+  [6, "VI · Báo giá", [["Bóc khối lượng, lập báo giá", "BP", 3], ["Duyệt nội bộ báo giá", "BOD", 1], ["Gửi báo giá chính thức cho khách", "KD", 1]]],
+  [7, "VII · Đàm phán", [["Đàm phán giá & điều khoản", "KD", 4], ["Chốt dự thảo hợp đồng", "KD", 2]]],
+  [8, "VIII · Chốt WON / LOST", [["Ký hợp đồng / nhận phản hồi cuối của khách", "KD", 1]]],
+];
+export const OPP_SCHED_TEMPLATES = [
+  { id: "full", label: "Đủ 7 bước bán hàng (~28 ngày làm việc)", mode: "full" },
+  { id: "fast", label: "Cơ hội nhanh — mỗi bước 1 việc chính (~10 ngày)", mode: "fast" },
+  { id: "blank", label: "Bảng trống (các nhóm theo 7 bước, tự thêm việc)", mode: "blank" },
+];
+const nextWorkDay = (iso) => { let x = iso; while (isSunday(x)) x = addDaysISO(x, 1); return x; };
+export function oppSchedFromTemplate(tplId, start) {
+  const tpl = OPP_SCHED_TEMPLATES.find((x) => x.id === tplId) || OPP_SCHED_TEMPLATES[0];
+  const groups = [], items = [];
+  let cur = nextWorkDay(start);
+  OPP_TPL.forEach(([st, name, rows]) => {
+    const g = makeSchedGroup(name);
+    groups.push(g);
+    if (tpl.mode === "blank") return;
+    const use = tpl.mode === "fast" ? [[rows[0][0], rows[0][1], 1]] : rows;
+    use.forEach(([t, who, n]) => {
+      const e = schedEndFromDays(cur, n);
+      items.push(makeSchedItem({ gid: g.id, t, s: cur, e, who, st, pc: 0 }));
+      cur = nextWorkDay(addDaysISO(e, 1));
+    });
+  });
+  return { groups, items };
+}
+
 // Sau khi 1 bước vừa được hoàn thành: nếu hoàn thành TRỄ hơn hạn của bước đó → chia lại các bước còn lại
 // từ hôm nay tới ngày kết thúc (kế hoạch giữ nguyên ngày kết thúc). Hoàn thành đúng/sớm hạn → giữ nguyên.
 export function replanAfterAdvance(oldProject, newProject) {
