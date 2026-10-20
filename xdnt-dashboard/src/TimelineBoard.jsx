@@ -6,11 +6,11 @@ import {
   PLAN_STAGE_COUNT, PLAN_PHASES, PLAN_SIZE_OPTIONS, suggestPlanDays,
   projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, setStageSkip, setPlanStart, planStatus, planProgressPct,
   stepStart, stepDays, stepEndForDays, stepIsOwnStart, setStageStart, planOverlaps,
-  schedItems, schedPct, schedIsLate,
+  schedItems, schedGroups, schedPct, schedIsLate, schedRange, schedSetDone, schedPullForward,
   addDaysISO, diffDays,
 } from "./data/seed";
 import { JobsBoard, ProjectJobs, JobRow, QuickAdd, jobOps } from "./JobsBoard";
-import SiteSchedule from "./SiteSchedule";
+import SiteSchedule, { varLabel } from "./SiteSchedule";
 
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI CHUNG (Gantt) — thay cho bảng "Kế hoạch triển khai" cũ   */
@@ -80,6 +80,8 @@ function ganttRange(rows, today) {
     mn = Math.min(mn, d2n(plan ? (plan.minStart || plan.start) : (p.plannedStart || p.createdAt || today)));
     if (plan) mx = Math.max(mx, d2n(plan.end) + (st.late || 0));
     (p.paymentMilestones || []).forEach((m) => { if (m.plannedDate) mx = Math.max(mx, d2n(m.plannedDate)); });
+    const sr = schedRange(schedItems(p));
+    if (sr) { mn = Math.min(mn, d2n(sr.s)); mx = Math.max(mx, d2n(sr.e)); }
   });
   mn -= 5; mx += 14; mn -= (mn + 3) % 7; // lùi về thứ Hai
   return { mn, mx };
@@ -96,8 +98,7 @@ function phaseLayout(plan) {
     const a = idx.map((i) => stepStart(plan, i)).reduce((m, x) => (x < m ? x : m));
     const b = idx.map((i) => plan.ends[i]).reduce((m, x) => (x > m ? x : m));
     const own = idx.some((i) => stepIsOwnStart(plan, i));
-    const w0 = d2n(b) - d2n(a) + (own ? 1 : 0);
-    if (w0 <= 0) return;
+    const w0 = Math.max(1, d2n(b) - d2n(a) + (own ? 1 : 0)); // giai đoạn xong trong 1 ngày vẫn vẽ 1 ô
     list.push({ ph, k, a, b, w0 });
   });
   const laneEnd = [];
@@ -110,7 +111,7 @@ function phaseLayout(plan) {
   return { items: list, lanes: Math.max(1, laneEnd.length) };
 }
 
-function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, today, tasksByCode, scrollRef }) {
+function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, today, tasksByCode, scrollRef, expanded, onToggleExp, onOpenSite, onToggleItem }) {
   const dw = DAYW[zoom], { mn, mx } = meta, W = (mx - mn) * dw, wkw = 7 * dw;
   const tn = d2n(today), tx = (tn - mn) * dw;
 
@@ -156,11 +157,13 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
           const stage = PROJECT_STAGES.find((s) => s.id === cur);
           const lay = plan ? phaseLayout(plan) : null;     // các giai đoạn + làn (làn 2, 3… = chạy song song)
           const LH = 24, extra = lay ? (lay.lanes - 1) * LH : 0;
+          const its = schedItems(p), isOpen = !!(expanded && expanded[p.id]) && its.length > 0;
           const curLane = lay ? (lay.items.find((x) => x.ph.from <= cur && cur <= x.ph.to)?.lane || 0) : 0;
           return (
-            <div key={p.id} className={`tl-g-row ${p.id === selId ? "sel" : ""}`} style={extra ? { height: 84 + extra } : undefined} onClick={() => onSelect(p.id)}>
-              <div className="tl-g-name">
-                <div className="tl-gn1"><b>{p.code.replace("TDDB-", "")}</b><Dots priority={p.priority} /><StatusPill st={st} /></div>
+            <React.Fragment key={p.id}>
+            <div className={`tl-g-row ${p.id === selId ? "sel" : ""}`} style={extra ? { height: 84 + extra } : undefined} onClick={() => onSelect(p.id)}>
+              <div className="tl-g-name" title="Nhấp đúp để mở bảng Tiến độ thi công của dự án" onDoubleClick={() => onOpenSite(p.id)}>
+                <div className="tl-gn1"><span style={{ display: "inline-flex", alignItems: "center" }}>{its.length > 0 && <button className={`tl-xp ${isOpen ? "on" : ""}`} title="Xem / ẩn các hạng mục thi công của dự án này" onClick={(e) => { e.stopPropagation(); onToggleExp(p.id); }} onDoubleClick={(e) => e.stopPropagation()}>{isOpen ? "▾" : "▸"} {its.length}</button>}<b>{p.code.replace("TDDB-", "")}</b></span><Dots priority={p.priority} /><StatusPill st={st} /></div>
                 <div className="tl-gn2" title={p.name}>{p.name}</div>
                 <div className="tl-gn3">
                   Bước {cur}/{PROJECT_STAGES.length} · {stage?.label} · {pct}%
@@ -234,6 +237,41 @@ function GanttChart({ rows, meta, zoom, layers, selId, onSelect, onHandleDown, t
                 <div className="tl-today" style={{ left: tx }} />
               </div>
             </div>
+            {isOpen && schedGroups(p).map((g) => {
+              const gs = its.filter((i) => i.gid === g.id);
+              if (!gs.length) return null;
+              const gr = schedRange(gs);
+              return (
+                <React.Fragment key={g.id}>
+                  <div className="tl-g-row tl-g-sub grp">
+                    <div className="tl-g-name"><span className="tx">{g.name}</span><span className="tl-note">{schedPct(gs)}%</span></div>
+                    <div className="tl-g-track" style={{ width: W }}>
+                      <div className="tl-sbar sum" style={{ left: (d2n(gr.s) - mn) * dw, width: Math.max(3, (d2n(gr.e) - d2n(gr.s) + 1) * dw - 1) }}><i style={{ width: `${schedPct(gs)}%` }} /></div>
+                      <div className="tl-today" style={{ left: tx }} />
+                    </div>
+                  </div>
+                  {gs.map((it) => {
+                    const vl = varLabel(it);
+                    const cls = it.pc >= 100 ? "dn" : schedIsLate(it, today) ? "late" : "";
+                    return (
+                      <div className="tl-g-row tl-g-sub" key={it.id}>
+                        <div className="tl-g-name" title={it.t}>
+                          <input type="checkbox" checked={it.pc >= 100} title="Đánh dấu hoàn thành — xong sớm thì rút ngắn thời gian" onChange={(e) => onToggleItem(p, it.id, e.target.checked)} />
+                          <span className="tx">{it.t}</span>
+                          {vl && <span className={`ss-var ${vl.cls}`}>{vl.t}</span>}
+                        </div>
+                        <div className="tl-g-track" style={{ width: W }}>
+                          {it.e0 && it.e0 !== it.e && <div className="tl-sbase" title={`Kế hoạch gốc: ${fd(it.s0 || it.s)} → ${fd(it.e0)}`} style={{ left: (d2n(it.s0 || it.s) - mn) * dw, width: Math.max(3, (d2n(it.e0) - d2n(it.s0 || it.s) + 1) * dw - 1) }} />}
+                          <div className={`tl-sbar ${cls}`} title={`${it.t}: ${fd(it.s)} → ${fd(it.e)} · ${it.pc}%${vl ? " · " + vl.t : ""}`} style={{ left: (d2n(it.s) - mn) * dw, width: Math.max(3, (d2n(it.e) - d2n(it.s) + 1) * dw - 1) }}><i style={{ width: `${it.pc}%` }} /></div>
+                          <div className="tl-today" style={{ left: tx }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            })}
+            </React.Fragment>
           );
         })}
         {rows.length === 0 && <div className="tl-panel-b tl-note">Không có dự án nào đang triển khai.</div>}
@@ -301,7 +339,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSet
                 const par = overlaps.find((o) => o.idx === i);
                 const firstActive = i === firstIdx && !done;
                 const nts = notes.filter((x) => x.stage === s.id);
-                const minEnd = own || dv ? a : addDaysISO(a, 1);
+                const minEnd = a; // được chọn hạn = đúng ngày bắt đầu (xong trong ngày)
                 return (
                   <tr key={s.id} className={skipped ? "rv-skip" : done ? "rv-done" : s.id === cur ? "rv-cur" : ""}>
                     <td>{done ? "✓" : s.id === cur ? "▶" : s.id}</td>
@@ -314,7 +352,7 @@ function ReviewPanel({ p, plan, cascade, setCascade, onEditEnd, onSetSkip, onSet
                           {own && <button className="rv-reset" title="Quay về: bắt đầu ngay khi bước trước kết thúc" onClick={() => onSetStageStart(i, null)}>↺</button>}</span>}</td>
                     <td>{done ? <span className="tl-num">{skipped ? "bỏ qua" : `${fd(b)} (xong)`}</span>
                       : dv ? <span className="tl-num">{fd(b)}</span>
-                      : skipped ? <CommitInput type="date" className="input input-sm" value={b} min={addDaysISO(a, 1)} onCommit={(v) => goodDate(v) && diffDays(a, v) >= 1 && onSetSkip(i, false, diffDays(a, v))} />
+                      : skipped ? <CommitInput type="date" className="input input-sm" value={b} min={a} onCommit={(v) => goodDate(v) && diffDays(a, v) >= 0 && onSetSkip(i, false, Math.max(1, diffDays(a, v)))} />
                       : <CommitInput type="date" className="input input-sm" value={b} min={minEnd} onCommit={(v) => goodDate(v) && onEditEnd(i, v)} />}</td>
                     <td>{done || dv ? <span className="tl-num">{skipped ? 0 : dur}</span>
                       : <CommitInput type="number" min="0" className="input input-sm dur" value={dur}
@@ -588,6 +626,7 @@ export default function TimelineBoard({
   const [zoom, setZoom] = useState("month");
   const [layers, setLayers] = useState({ ms: true, bn: true, tk: true, nt: true });
   const [selId, setSelId] = useState(null);
+  const [expanded, setExpanded] = useState({}); // dự án đang mở chi tiết hạng mục thi công trên Lịch chung
   const [reviewId, setReviewId] = useState(null);
   const [cascade, setCascade] = useState(true);
   const [toast, setToast] = useState(null);
@@ -606,10 +645,10 @@ export default function TimelineBoard({
     if (p) { setSelId(p.id); setMode("gantt"); setView(p.status === "closed" ? "archived" : "active"); }
   }, [focusCode]);
 
-  const showToast = (msg, undo) => {
-    setToast({ msg, undo: undo || null });
+  const showToast = (msg, undo, act) => {
+    setToast({ msg, undo: undo || null, act: act || null });
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 7000);
+    toastTimer.current = setTimeout(() => setToast(null), act ? 12000 : 7000);
   };
   // Ghi 1 patch lên dự án, kèm "Hoàn tác" (đưa các trường vừa đổi về giá trị cũ).
   const commit = (project, patch, msg) => {
@@ -711,6 +750,28 @@ export default function TimelineBoard({
   };
   const toggleNote = (p, id) => updateProject(p.id, { notes: (p.notes || []).map((n) => (n.id === id ? { ...n, resolved: !n.resolved } : n)) });
   const removeNote = (p, id) => updateProject(p.id, { notes: (p.notes || []).filter((n) => n.id !== id) });
+
+  /* ---- tick hoàn thành hạng mục thi công ngay trên Lịch chung ---- */
+  const toggleSiteItem = (p, id, done) => {
+    const items0 = schedItems(p), groups0 = schedGroups(p);
+    const r = schedSetDone(items0, id, done, today);
+    const it = items0.find((x) => x.id === id);
+    const prevSchedule = p.schedule || null;
+    updateProject(p.id, { schedule: { groups: groups0, items: r.items } });
+    const undo = () => { updateProject(p.id, { schedule: prevSchedule }); setToast(null); };
+    if (!done) { showToast(`Đã bỏ đánh dấu xong “${it.t}” — trả về kế hoạch gốc`, undo); return; }
+    if (r.early > 0) {
+      showToast(`${p.code.slice(5)} · Xong “${it.t}” sớm ${r.early} ngày — ngày kết thúc hạng mục đã rút ngắn`, undo, {
+        label: `Dời các hạng mục sau sớm ${r.early} ngày`,
+        fn: () => {
+          const q = schedPullForward(r.items, id, r.early, today);
+          updateProject(p.id, { schedule: { groups: groups0, items: q.items } });
+          showToast(q.moved ? `Đã dời sớm ${q.moved} hạng mục nối sau — thời gian bàn giao rút ngắn tương ứng` : "Không có hạng mục nào dời được (đã sát hôm nay hoặc không nối sau)", () => { updateProject(p.id, { schedule: { groups: groups0, items: r.items } }); setToast(null); });
+        },
+      });
+    } else showToast(r.early < 0 ? `Xong “${it.t}” trễ ${-r.early} ngày so với kế hoạch` : `Đã đánh dấu xong “${it.t}”`, undo);
+  };
+  const openSite = (pid) => { setSelId(pid); setSiteFocus(pid); setMode("site"); };
 
   /* ---- kéo mốc trên Gantt ---- */
   const onHandleDown = (e, p, k) => {
@@ -830,6 +891,12 @@ export default function TimelineBoard({
             <label key={k}><input type="checkbox" checked={layers[k]} onChange={(e) => setLayers({ ...layers, [k]: e.target.checked })} />{l}</label>
           ))}
         </div>
+        {(() => {
+          const withItems = activeRows.filter((r) => schedItems(r.p).length);
+          if (!withItems.length) return null;
+          const all = withItems.every((r) => expanded[r.p.id]);
+          return <button className="btn btn-outline btn-sm" onClick={() => setExpanded(all ? {} : Object.fromEntries(withItems.map((r) => [r.p.id, true])))}>{all ? "▾ Ẩn chi tiết thi công" : "▸ Mở chi tiết thi công"}</button>;
+        })()}
         <div className="tl-sp" /><button className="btn btn-outline btn-sm" onClick={scrollToToday}>Về hôm nay</button>
       </div>
 
@@ -867,9 +934,10 @@ export default function TimelineBoard({
 
           {showG && (
             <div className="tl-panel">
-              <div className="tl-panel-h"><h3>Lịch triển khai chung</h3><span className="sub">{activeRows.length} dự án · kéo vạch đen cuối mỗi giai đoạn để dời mốc</span></div>
+              <div className="tl-panel-h"><h3>Lịch triển khai chung</h3><span className="sub">{activeRows.length} dự án · kéo vạch đen cuối mỗi giai đoạn để dời mốc · <b>nhấp đúp tên dự án</b> để mở Tiến độ thi công · bấm ▸ để xem từng hạng mục</span></div>
               <GanttChart rows={drawRows} meta={meta} zoom={zoom} layers={layers} selId={selRow?.p.id} onSelect={onSelect} onHandleDown={onHandleDown}
-                today={today} tasksByCode={tasksByCode} scrollRef={scrollRef} />
+                today={today} tasksByCode={tasksByCode} scrollRef={scrollRef}
+                expanded={expanded} onToggleExp={(id) => setExpanded((e) => ({ ...e, [id]: !e[id] }))} onOpenSite={openSite} onToggleItem={toggleSiteItem} />
               <div className="tl-legend">
                 <span><i className="tl-sw" style={{ background: "var(--green)" }} />Giai đoạn đã xong</span>
                 <span><i className="tl-sw" style={{ background: "var(--blue)" }} />Đang làm (đã chạy)</span>
@@ -1052,7 +1120,7 @@ export default function TimelineBoard({
       )}
 
       {toast && (
-        <div className="tl-toast"><span>{toast.msg}</span>{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>
+        <div className="tl-toast"><span>{toast.msg}</span>{toast.act && <button className="ss-act" onClick={() => { const f = toast.act.fn; setToast(null); f(); }}>{toast.act.label}</button>}{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>
       )}
       {dragRow && <div className="tl-dragtip" style={{ left: dragRow.x + 14, top: dragRow.y - 34 }}>{dragRow.label}</div>}
     </div>
