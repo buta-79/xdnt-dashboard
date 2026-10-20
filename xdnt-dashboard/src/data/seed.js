@@ -1088,6 +1088,72 @@ export function oppSchedFromTemplate(tplId, start) {
   return { groups, items };
 }
 
+/* ---------------------------------------------------------------------- */
+/*  CHUYỂN DỰ ÁN VỀ LẠI CƠ HỘI (deal lại từ đầu hạng mục / BOQ)              */
+/*  - KD/BP đề xuất (project.revert = {status:"pending",…}); BOD duyệt hoặc chuyển thẳng */
+/*  - dự án được LƯU TRỮ (status "reverted", ẩn khỏi mọi số tổng), cơ hội cũ mở lại ở bước Báo giá */
+/* ---------------------------------------------------------------------- */
+export const OPP_REVERT_STAGE_ID = 6; // Báo giá
+// [tên việc, ai, số ngày làm việc, bước Stage-Gate]
+const REVERT_TPL = [
+  ["Rà soát phạm vi & các hạng mục phải deal lại với khách", "KD", 1, 6],
+  ["Lập lại BOQ / khối lượng theo phạm vi mới", "BP", 3, 6],
+  ["Duyệt nội bộ báo giá mới", "BOD", 1, 6],
+  ["Gửi báo giá mới cho khách", "KD", 1, 6],
+  ["Đàm phán lại giá & hạng mục", "KD", 3, 7],
+  ["Chốt phụ lục / hợp đồng điều chỉnh", "KD", 2, 7],
+  ["Ký lại — WON", "KD", 1, 8],
+];
+export function projectRevertSummary(p) {
+  const items = schedItems(p);
+  return {
+    stage: p.currentStage, stageLabel: (PROJECT_STAGES.find((s) => s.id === p.currentStage) || {}).label || "",
+    pct: projectStagePct(p), contractValue: p.contractValue || 0, collected: projectCollected(p),
+    budget: (p.costs || []).reduce((a, c) => a + (c.budget || 0), 0), actualCost: (p.costs || []).reduce((a, c) => a + (c.actual || 0), 0),
+    siteItems: items.length, siteDone: items.filter((i) => (i.pc || 0) >= 100).length, sitePct: items.length ? schedPct(items) : null,
+  };
+}
+export const makeRevertRequest = (reason, by, now) => ({ status: "pending", reason, by, at: now, decidedBy: null, decidedAt: null, note: null });
+export function revertProjectToOpportunity(project, opp, { reason, requestedBy, approvedBy, now }) {
+  const sum = projectRevertSummary(project);
+  const freshStage = (st) => ({ ...st, state: "pending", gateChecked: (st.gateChecked || []).map(() => false), completedAt: null, completedBy: null });
+  let base = opp;
+  if (!base) {
+    base = makeOpportunity({ title: project.name, customerId: project.customerId, customerName: project.customerName, value: project.contractValue, note: project.scope, createdAt: project.createdAt });
+    const st = {};
+    OPP_STAGES.forEach((d) => { const cur = base.stages[d.id]; st[d.id] = d.id < OPP_REVERT_STAGE_ID ? { ...cur, state: "done", gateChecked: cur.gateChecked.map(() => true), completedAt: now, completedBy: approvedBy } : cur; });
+    base = { ...base, stages: st };
+  }
+  const stages = {};
+  OPP_STAGES.forEach((d) => { const cur = base.stages[d.id]; stages[d.id] = d.id >= OPP_REVERT_STAGE_ID ? freshStage(cur) : cur; });
+  // nhóm việc "deal lại" bắt đầu từ hôm nay
+  const sch = base.schedule || { groups: [], items: [] };
+  const roman = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"][sch.groups.length] || String(sch.groups.length + 1);
+  const g = makeSchedGroup(`${roman} · Deal lại (chuyển từ dự án ${project.code})`);
+  let cur = nextWorkDay(now);
+  const newItems = REVERT_TPL.map(([t, who, n, st]) => {
+    const e = schedEndFromDays(cur, n);
+    const it = makeSchedItem({ gid: g.id, t, s: cur, e, who, st, pc: 0 });
+    cur = nextWorkDay(addDaysISO(e, 1));
+    return it;
+  });
+  const hist = {
+    id: uid("rv"), code: project.code, name: project.name, contractValue: sum.contractValue, collected: sum.collected, actualCost: sum.actualCost,
+    stage: sum.stage, stageLabel: sum.stageLabel, pct: sum.pct, sitePct: sum.sitePct, reason, requestedBy, approvedBy, at: now,
+  };
+  const newOpp = {
+    ...base, status: "open", currentStage: OPP_REVERT_STAGE_ID, stages, lostReason: null, wonProjectCode: null,
+    projectHistory: [...(base.projectHistory || []), hist], reopenedFromProject: project.code, reopenedAt: now,
+    bottlenecks: [...(base.bottlenecks || []), { id: uid("bn"), stageId: OPP_DECISION_STAGE_ID, reason: `Chuyển từ dự án ${project.code} về cơ hội: ${reason}`, by: approvedBy, at: now, resolvedAt: now }],
+    schedule: { groups: [...sch.groups, g], items: [...sch.items, ...newItems] },
+  };
+  const newProject = {
+    ...project, status: "reverted", revertedAt: now, revertedToOppId: newOpp.id,
+    revert: { ...(project.revert || {}), status: "approved", reason, by: requestedBy, decidedBy: approvedBy, decidedAt: now },
+  };
+  return { project: newProject, opp: newOpp };
+}
+
 // Sau khi 1 bước vừa được hoàn thành: nếu hoàn thành TRỄ hơn hạn của bước đó → chia lại các bước còn lại
 // từ hôm nay tới ngày kết thúc (kế hoạch giữ nguyên ngày kết thúc). Hoàn thành đúng/sớm hạn → giữ nguyên.
 export function replanAfterAdvance(oldProject, newProject) {
