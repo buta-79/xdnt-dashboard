@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect } from "react";
 import {
   todayISO, addDaysISO, diffDays, PLAN_STAGE_COUNT, PROJECT_STAGES,
   makeJob, makeNote, jobIsLate, parseJobDates, parseJobList,
-  schedItems, schedDueItems, schedIsLate, schedSetDone, schedVariance,
+  schedItems, schedDueItems, schedIsLate, schedSetDone, schedVariance, schedDoneMessage,
 } from "./data/seed";
+import { DoneDialog } from "./SiteSchedule";
 const stageName = (id) => PROJECT_STAGES.find((s) => s.id === id)?.label || "";
 
 /* ---------------------------------------------------------------------- */
@@ -172,7 +173,7 @@ function PasteDialog({ projects, today, onClose, onApply }) {
 }
 
 /* ---- Trang chính ---- */
-export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) {
+export function JobsBoard({ projects, updateProject, focusPid, onOpenProject, currentRole }) {
   const today = todayISO();
   const active = projects.filter((p) => p.status !== "closed").sort((a, b) => a.code.localeCompare(b.code));
   const [range, setRange] = useState("today");
@@ -180,6 +181,7 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
   const [pid, setPid] = useState(focusPid || null);
   const [dlg, setDlg] = useState(false);
   const [toast, setToast] = useState("");
+  const [doneFor, setDoneFor] = useState(null);
   const tRef = useRef(null);
   useEffect(() => () => clearTimeout(tRef.current), []);
   const say = (m) => { setToast(m); clearTimeout(tRef.current); tRef.current = setTimeout(() => setToast(""), 4000); };
@@ -263,10 +265,13 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
             const setPct = (id, n) => updateProject(p.id, { schedule: { ...(p.schedule || {}), items: schedItems(p).map((x) => (x.id === id ? { ...x, pc: n } : x)) } });
             const lateSite = site.filter((x) => schedIsLate(x, day)).length;
             const setDone = (id, done) => {
-              const r = schedSetDone(schedItems(p), id, done, today);
-              updateProject(p.id, { schedule: { ...(p.schedule || {}), items: r.items } });
               const nm = (schedItems(p).find((x) => x.id === id) || {}).t || "";
-              say(!done ? `Đã bỏ đánh dấu xong “${nm}”` : r.early > 0 ? `Xong “${nm}” sớm ${r.early} ngày — mở tab Tiến độ thi công nếu muốn dời các hạng mục nối sau sớm lên` : r.early < 0 ? `Xong “${nm}” trễ ${-r.early} ngày` : `Đã đánh dấu xong “${nm}”`);
+              if (done) { setDoneFor({ pid: p.id, id }); return; }
+              const it0 = schedItems(p).find((x) => x.id === id);
+              if (it0 && it0.bd && it0.bd.status === "approved" && currentRole !== "BOD") { say("Hoàn thành nhập bù đã được BOD duyệt — chỉ BOD mới bỏ đánh dấu được"); return; }
+              const r = schedSetDone(schedItems(p), id, false, today);
+              updateProject(p.id, { schedule: { ...(p.schedule || {}), items: r.items } });
+              say(`Đã bỏ đánh dấu xong “${nm}”`);
             };
             const dn = all.filter((j) => j.done).length;
             const late = items.filter((j) => jobIsLate(j, day)).length;
@@ -315,6 +320,17 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
       </div>
 
       {dlg && <PasteDialog projects={active} today={today} onClose={() => setDlg(false)} onApply={apply} />}
+      {doneFor && (() => {
+        const dp = active.find((x) => x.id === doneFor.pid) || projects.find((x) => x.id === doneFor.pid);
+        const di = dp && schedItems(dp).find((x) => x.id === doneFor.id);
+        if (!di) return null;
+        return <DoneDialog item={di} today={today} role={currentRole} onClose={() => setDoneFor(null)} onConfirm={({ date, reason }) => {
+          const r = schedSetDone(schedItems(dp), doneFor.id, true, today, { date, reason, role: currentRole, by: currentRole });
+          updateProject(dp.id, { schedule: { ...(dp.schedule || {}), items: r.items } });
+          say(schedDoneMessage(di.t, true, r));
+          setDoneFor(null);
+        }} />;
+      })()}
       {toast && <div className="tl-toast"><span>{toast}</span></div>}
     </div>
   );
