@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
-  todayISO, diffDays, PROJECT_STAGES,
+  todayISO, addDaysISO, diffDays, PROJECT_STAGES,
   SCHED_WHO, SCHED_STAGE_IDS, SCHED_TEMPLATES, isSunday,
   schedWdays, schedEndFromDays, schedPct, schedRange, schedDerive, schedIsLate, schedItems, schedGroups,
   makeSchedItem, makeSchedGroup, parseSchedule, schedFromTemplate, projectPlan,
-  schedSetDone, schedPullForward, schedVariance, schedBaseEnd,
+  schedSetDone, schedPullForward, schedVariance, schedBaseEnd, schedPending, schedDecide, schedDoneMessage,
 } from "./data/seed";
 
 /* ---------------------------------------------------------------------- */
@@ -22,12 +22,48 @@ const fdy = (s) => (s ? fd(s) + "/" + s.slice(0, 4) : "—");
 const WD = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const stageName = (id) => PROJECT_STAGES.find((s) => s.id === id)?.label || "";
 const DW = 24;
-// Nhãn sớm / trễ so với kế hoạch gốc của 1 hạng mục
+// Nhãn sớm / trễ của 1 hạng mục (xem schedVariance): đã xong → so với hạn kế hoạch lúc bấm xong; chưa xong nhưng bị dời → so với kế hoạch gốc
 export function varLabel(it) {
+  if (schedPending(it)) return { cls: "pend", t: `chờ BOD duyệt · xong thực tế ${fd(it.bd.date)}` };
   const v = schedVariance(it);
   if (!v) return null;
   const done = !!it.doneAt;
   return { cls: v > 0 ? "early" : "late", t: v > 0 ? `${done ? "xong sớm" : "dời sớm"} ${v} ngày` : `${done ? "xong trễ" : "dời trễ"} ${-v} ngày` };
+}
+
+/* ---- Hộp thoại "Hoàn thành hạng mục": chọn ngày hoàn thành thực tế (dùng chung ở 3 nơi) ---- */
+export function DoneDialog({ item, today, role, onConfirm, onClose }) {
+  const yesterday = addDaysISO(today, -1);
+  const [mode, setMode] = useState("today");
+  const [date, setDate] = useState(item.e < today ? item.e : yesterday);
+  const [reason, setReason] = useState("");
+  const chosen = mode === "today" ? today : date;
+  const v = diffDays(chosen, item.e); // > 0 sớm, < 0 trễ
+  const verdict = v > 0 ? `sớm ${v} ngày so với hạn ${fd(item.e)}` : v < 0 ? `trễ ${-v} ngày so với hạn ${fd(item.e)}` : `đúng hạn (${fd(item.e)})`;
+  const isBOD = role === "BOD";
+  const ok = mode === "today" || (!!date && date <= yesterday && (isBOD || reason.trim().length > 0));
+  return (
+    <div className="ss-ov" onClick={onClose}>
+      <div className="ss-dlg ss-dlgs" onClick={(e) => e.stopPropagation()}>
+        <h3>Hoàn thành “{item.t}”</h3>
+        <p className="ss-hint">Kế hoạch: {fd(item.s)} → {fd(item.e)}</p>
+        <label className="ss-rad"><input type="radio" checked={mode === "today"} onChange={() => setMode("today")} /> <span>Vừa xong <b>hôm nay</b> ({fd(today)})</span></label>
+        <label className="ss-rad"><input type="radio" checked={mode === "back"} onChange={() => setMode("back")} /> <span>Thực tế <b>đã xong từ trước</b> (quên cập nhật) — ngày hoàn thành thực tế:
+          <input type="date" className="input input-sm" style={{ marginLeft: 6 }} value={date} max={yesterday} onFocus={() => setMode("back")} onChange={(e) => { setDate(e.target.value); setMode("back"); }} /></span></label>
+        {mode === "back" && (
+          <>
+            <textarea className="ss-ta ss-ta-s" placeholder={isBOD ? "Ghi chú (không bắt buộc)" : "Lý do / bằng chứng nhập bù (bắt buộc) — VD: đã bàn giao hôm 18/10, có biên bản"} value={reason} onChange={(e) => setReason(e.target.value)} />
+            {!isBOD && <div className="tl-warnbox" style={{ marginTop: 6 }}>Chỉ <b>BOD</b> được duyệt ngày hoàn thành đã qua. Hạng mục sẽ ghi nhận <b>xong hôm nay</b> và hiện “chờ BOD duyệt”; khi BOD duyệt mới tính theo ngày {fd(date)}.</div>}
+          </>
+        )}
+        <div className={`ss-verdict ${v < 0 ? "bad" : "good"}`}>{mode === "back" && !isBOD ? `Nếu BOD duyệt: ${verdict}` : `Kết quả: ${verdict}`}</div>
+        <div className="ss-foot">
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Hủy</button>
+          <button className="btn btn-primary btn-sm" disabled={!ok} onClick={() => onConfirm({ date: mode === "back" ? date : today, reason: reason.trim() })}>{mode === "back" && !isBOD ? "Gửi BOD duyệt" : "Xác nhận hoàn thành"}</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Ô nhập: chốt khi rời ô / Enter / sau 0,8 giây — không ghi Firestore từng phím gõ
@@ -166,7 +202,7 @@ function SiteGantt({ groups, items, collapsed, today }) {
 const diff = (a, b) => diffDays(a, b);
 
 /* ====================================================================== */
-export default function SiteSchedule({ projects, updateProject, focusPid, onOpenPlan }) {
+export default function SiteSchedule({ projects, updateProject, focusPid, onOpenPlan, currentRole }) {
   const today = todayISO();
   const active = useMemo(() => projects.filter((p) => p.status !== "closed").sort((a, b) => a.code.localeCompare(b.code)), [projects]);
   const [pid, setPid] = useState(focusPid || null);
@@ -176,6 +212,7 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
   const [tplStart, setTplStart] = useState(today);
   const [askDelG, setAskDelG] = useState(null);
   const [tplAsk, setTplAsk] = useState(false);
+  const [doneFor, setDoneFor] = useState(null); // id hạng mục đang mở hộp thoại hoàn thành
   const [toast, setToast] = useState(null);
   const tRef = useRef(null);
   useEffect(() => () => clearTimeout(tRef.current), []);
@@ -192,22 +229,31 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
     updateProject(p.id, { schedule: next });
     if (msg) say(msg, () => { updateProject(p.id, { schedule: prev }); setToast(null); }, act);
   };
-  // Tick hoàn thành / bỏ hoàn thành. Xong sớm → rút ngắn hạng mục, và đề nghị dời các hạng mục nối sau
+  // Tick hoàn thành → mở hộp thoại chọn ngày thực tế; bỏ tick → trả về kế hoạch trước khi bấm xong
   const toggleDone = (id, done) => {
-    const r = schedSetDone(items, id, done, today);
+    if (done) { setDoneFor(id); return; }
     const it = items.find((x) => x.id === id);
-    let msg, act = null;
-    if (!done) msg = `Đã bỏ đánh dấu xong “${it.t}” — trả về kế hoạch gốc`;
-    else if (r.early > 0) {
-      msg = `Xong “${it.t}” sớm ${r.early} ngày — ngày kết thúc hạng mục đã rút ngắn về hôm nay`;
+    if (it && it.bd && it.bd.status === "approved" && currentRole !== "BOD") { say("Hạng mục này đã được BOD duyệt ngày hoàn thành — chỉ BOD được bỏ đánh dấu xong"); return; }
+    const r = schedSetDone(items, id, false, today);
+    save({ groups, items: r.items }, schedDoneMessage(it.t, false, r));
+  };
+  const confirmDone = (id, { date, reason }) => {
+    setDoneFor(null);
+    const it = items.find((x) => x.id === id);
+    const r = schedSetDone(items, id, true, today, { date, reason, role: currentRole, by: currentRole });
+    let act = null;
+    if (r.early > 0) {
       act = { label: `Dời các hạng mục sau sớm ${r.early} ngày`, fn: () => {
         const q = schedPullForward(r.items, id, r.early, today);
         updateProject(p.id, { schedule: { groups, items: q.items } });
         say(q.moved ? `Đã dời sớm ${q.moved} hạng mục nối sau — thời gian bàn giao rút ngắn tương ứng` : "Không có hạng mục nào dời được (đã sát hôm nay hoặc không nối sau)", () => { updateProject(p.id, { schedule: { groups, items: r.items } }); setToast(null); });
       } };
-    } else if (r.early < 0) msg = `Xong “${it.t}” trễ ${-r.early} ngày so với kế hoạch`;
-    else msg = `Đã đánh dấu xong “${it.t}”`;
-    save({ groups, items: r.items }, msg, act);
+    }
+    save({ groups, items: r.items }, schedDoneMessage(it.t, true, r), act);
+  };
+  const decide = (id, approve) => {
+    const it = items.find((x) => x.id === id);
+    save({ groups, items: schedDecide(items, id, approve, currentRole, today) }, approve ? `BOD đã duyệt “${it.t}” hoàn thành ngày ${fd(it.bd.date)}` : `Đã từ chối ngày nhập bù của “${it.t}” — giữ nguyên xong hôm nay`);
   };
   const setItems = (nextItems, msg) => save({ groups, items: nextItems }, msg);
   const editItem = (id, f, v) => {
@@ -328,6 +374,12 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
             <div className="ss-k"><div className="l">Tiến độ chung (theo ngày công)</div><div className="v">{pc}%{nLate > 0 && <small style={{ color: "var(--red)" }}> · {nLate} hạng mục trễ</small>}</div></div>
           </div>
 
+          {items.some(schedPending) && (
+            <div className="tl-warnbox" style={{ margin: 0 }}>
+              <b>{items.filter(schedPending).length} hạng mục đang chờ BOD duyệt ngày hoàn thành thực tế</b> (nhập bù ngày đã qua): {items.filter(schedPending).map((i) => `${i.t} (xong ${fd(i.bd.date)})`).join(" · ")}.
+              {currentRole === "BOD" ? " Bấm “Duyệt” / “Từ chối” ở cột % tiến độ bên dưới." : " Trong lúc chờ, hạng mục ghi nhận xong hôm nay và chưa tính sớm/trễ."}
+            </div>
+          )}
           <div className="tl-panel">
             <div className="tl-panel-h"><h3>Nối với kế hoạch 12 bước</h3><span className="sub">các bước này tự lấy ngày & % từ bảng hạng mục bên dưới</span></div>
             {!plan && <div className="tl-panel-b"><div className="tl-warnbox" style={{ margin: 0 }}>Dự án chưa có kế hoạch 12 bước nên chưa nối được — tạo kế hoạch nhanh ở tab “Lịch triển khai”. Bảng này vẫn dùng bình thường.</div></div>}
@@ -385,7 +437,14 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
                                 <input type="checkbox" className="ss-chk" checked={it.pc >= 100} title="Đánh dấu hoàn thành — xong sớm thì rút ngắn thời gian" onChange={(e) => toggleDone(it.id, e.target.checked)} />
                                 <Cell type="number" min="0" max="100" className="input input-sm ss-n" value={it.pc} onCommit={(v) => editItem(it.id, "pc", v)} /> %
                                 {late && <span className="tl-pill bad" style={{ marginLeft: 6 }}>trễ</span>}
-                                {(() => { const vl = varLabel(it); return vl ? <span className={`ss-var ${vl.cls}`} title={`Kế hoạch gốc: ${fd(it.s0 || it.s)} → ${fd(it.e0)}`}>{vl.t}</span> : null; })()}</td>
+                                {(() => {
+                                  const vl = varLabel(it);
+                                  return ((vl || it.bd) ? (<div className="ss-vrow">
+                                    {vl && <span className={`ss-var ${vl.cls}`} title={schedPending(it) ? `${it.bd.by} đề nghị: ${it.bd.reason}` : it.doneAt ? `Hạn kế hoạch lúc bấm xong: ${fd(it.ep || it.e)}` : `Kế hoạch gốc: ${fd(it.s0 || it.s)} → ${fd(it.e0)}`}>{vl.t}</span>}
+                                    {it.bd && it.bd.status === "approved" && <span className="ss-var ok" title={`${it.bd.by} nhập bù: ${it.bd.reason || "—"} · BOD duyệt ${fd(it.bd.decidedAt)}`}>nhập bù · BOD duyệt</span>}
+                                    {schedPending(it) && currentRole === "BOD" && <span className="ss-dec"><button className="btn btn-primary btn-sm" onClick={() => decide(it.id, true)}>Duyệt</button><button className="btn btn-outline btn-sm" onClick={() => decide(it.id, false)}>Từ chối</button></span>}
+                                  </div>) : null);
+                                })()}</td>
                               <td style={{ whiteSpace: "nowrap" }}><Cell type="text" className="input input-sm ss-note" placeholder="Ghi chú" value={it.note} onCommit={(v) => editItem(it.id, "note", v)} /></td>
                               <td><button className="btn btn-ghost btn-sm" title="Xóa hạng mục" onClick={() => delItem(it.id)}>×</button></td>
                             </tr>
@@ -407,6 +466,7 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
         </>
       )}
 
+      {doneFor && items.find((x) => x.id === doneFor) && <DoneDialog item={items.find((x) => x.id === doneFor)} today={today} role={currentRole} onConfirm={(o) => confirmDone(doneFor, o)} onClose={() => setDoneFor(null)} />}
       {dlg && <PasteDialog today={today} hasItems={items.length > 0} onClose={() => setDlg(false)} onApply={applyPaste} />}
       {toast && <div className="tl-toast"><span>{toast.msg}</span>{toast.act && <button className="ss-act" onClick={() => { const f = toast.act.fn; setToast(null); f(); }}>{toast.act.label}</button>}{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>}
     </div>
