@@ -859,3 +859,11 @@
 .oppt-names { min-width: 0; overflow: hidden; }
 .oppt-name { overflow: hidden; }
 .oppt-name b, .oppt-name span { display: block; max-width: 100%; }
+/* Chuyển dự án về cơ hội */
+.rv-act { display: inline-flex; gap: 6px; margin-left: 8px; flex-wrap: wrap; vertical-align: middle; }
+.rv-eff { font-size: 12.5px; line-height: 1.6; margin: 8px 0; }
+.rv-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.rv-kv > div { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.rv-kv span { font-size: 10.5px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .03em; }
+.rv-hist { font-size: 12.5px; line-height: 1.5; padding: 6px 0; border-top: 1px solid var(--line); }
+.rv-hist:first-of-type { border-top: 0; }
