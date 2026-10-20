@@ -17,11 +17,13 @@ import {
 } from "./lib/report";
 import { parseTimelineImportFile } from "./lib/importTimeline";
 import TimelineBoard from "./TimelineBoard";
+import OppSchedule from "./OppSchedule";
+import OppTimeline from "./OppTimeline";
 import {
   todayISO, ROLES, ROLE_LABELS, MONTHS, uid, formatVND, formatCompactVND, addMonths, daysBetween,
   nextProjectCode, canAdvanceGate, toggleGateCheck, advanceGateStage, sendBackGate,
   hasOpenBottleneck, resolveLastBottleneck,
-  OPP_STAGES, OPP_DECISION_STAGE_ID, makeOpportunity,
+  OPP_STAGES, OPP_DECISION_STAGE_ID, makeOpportunity, schedItems, schedPct, schedIsLate,
   PROJECT_STAGES, PROJECT_FINAL_STAGE_ID, PROJECT_WARRANTY_STAGE_ID, PROJECT_ACCEPTANCE_STAGE_ID, makeProject,
   projectCollected, projectAR, projectStagePct, projectRiskLevel, makeRevenueEvent, makeCost,
   milestoneStatus, milestoneAmount, nextPaymentMilestone,
@@ -706,6 +708,8 @@ function OpportunityDetail({ opportunity, currentRole, myName, onValueChange, on
 
       <BottleneckLog bottlenecks={opportunity.bottlenecks} stageDefs={OPP_STAGES} />
 
+      <OppSchedule key={opportunity.id} opp={opportunity} onSave={onValueChange} currentRole={currentRole} />
+
       <div className="pd-stages">
         <h4>Sales Stage-Gate</h4>
         <StageGateStepper stageDefs={OPP_STAGES} flow={opportunity} currentRole={currentRole}
@@ -737,6 +741,7 @@ function OpportunityDetail({ opportunity, currentRole, myName, onValueChange, on
 function OpportunitiesTab({ opportunities, customers, currentRole, myName, saveOppDoc, selectedId, setSelectedId, addOpportunity, toggleGate, advanceOpportunity, sendBackOpportunity, markWon, markLost, removeOpportunity, goToProject }) {
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState("open");
+  const [view, setView] = useState("list"); // list | timeline
   const filtered = opportunities.filter((o) => filter === "all" ? true : o.status === filter);
   const selected = opportunities.find((o) => o.id === selectedId) || filtered[0];
   const totalValue = filtered.reduce((s, o) => s + o.value, 0);
@@ -753,7 +758,29 @@ function OpportunitiesTab({ opportunities, customers, currentRole, myName, saveO
 
       {showForm && <NewOpportunityForm customers={customers} onCancel={() => setShowForm(false)} onCreate={(data) => { addOpportunity(data); setShowForm(false); }} />}
 
-      <div className="split">
+      <div className="tl-seg opp-view" style={{ marginBottom: 12 }}>
+        <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}>Danh sách &amp; chi tiết</button>
+        <button className={view === "timeline" ? "on" : ""} onClick={() => setView("timeline")}>Timeline tổng hợp</button>
+      </div>
+
+      {view === "timeline" && (
+        <div className="tl-panel">
+          <div className="tl-panel-h">
+            <h3>Timeline tổng hợp cơ hội</h3>
+            <div className="tl-sp" />
+            <div className="filter-tabs" style={{ margin: 0 }}>
+              {[["open", "Đang theo đuổi"], ["won", "WON"], ["lost", "LOST"], ["all", "Tất cả"]].map(([k, l]) => (
+                <button key={k} className={`chip ${filter === k ? "chip-active" : ""}`} onClick={() => setFilter(k)}>{l}</button>
+              ))}
+            </div>
+          </div>
+          <div className="tl-panel-b">
+            <OppTimeline opportunities={filtered} selectedId={selectedId} onOpen={(id) => { setSelectedId(id); setView("list"); }} />
+          </div>
+        </div>
+      )}
+
+      {view === "list" && <div className="split">
         <div className="split-left">
           <div className="filter-tabs">
             {[["open", "Đang theo đuổi"], ["won", "WON"], ["lost", "LOST"], ["all", "Tất cả"]].map(([k, l]) => (
@@ -773,6 +800,7 @@ function OpportunitiesTab({ opportunities, customers, currentRole, myName, saveO
                   </div>
                   <div className="project-card-client">{o.customerName}</div>
                   <div className="project-card-stage">Bước {o.currentStage}/{OPP_STAGES.length} · {stg?.label} · {formatCompactVND(o.value)}</div>
+                  {schedItems(o).length > 0 && (() => { const its = schedItems(o), lt = its.filter((i) => schedIsLate(i, todayISO())).length; return <div className="project-card-stage">Công việc {schedPct(its)}%{lt > 0 && <span style={{ color: "var(--red)", fontWeight: 600 }}> · {lt} việc trễ</span>}</div>; })()}
                 </div>
               );
             })}
@@ -791,7 +819,7 @@ function OpportunitiesTab({ opportunities, customers, currentRole, myName, saveO
               goToProject={goToProject} />
           ) : <div className="empty-note">Chọn một cơ hội để xem chi tiết.</div>}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
