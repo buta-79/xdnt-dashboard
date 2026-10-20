@@ -754,3 +754,36 @@
 @media (max-width: 700px) { .ss-tpl { margin-left: 0; } .ss-gnames { flex-basis: 130px; } }
 .ss-tbl input.input.ss-n { width: 60px; max-width: 60px; text-align: center; }
 .ss-tbl input.input.ss-d { width: 134px; }
+
+/* ====== Hoàn thành hạng mục / sớm – trễ / mở rộng trên Gantt chung ====== */
+.ss-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.ss-pill { border: 1px solid var(--line-dark); background: var(--panel); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit; color: var(--ink); }
+.ss-pill.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+.ss-pill.empty { color: var(--ink-soft); border-style: dashed; }
+.ss-pill .lt { font-style: normal; margin-left: 6px; color: var(--red); font-weight: 600; }
+.ss-pill.on .lt { color: #FFD0C6; }
+.ss-chk { width: 16px; height: 16px; accent-color: var(--green); margin: 0 6px 0 0; vertical-align: middle; cursor: pointer; }
+.ss-var { display: inline-block; margin-left: 6px; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.ss-var.early { background: var(--green-soft); color: var(--green); }
+.ss-var.late { background: var(--red-soft); color: var(--red); }
+.ss-tbl tr.dn td { background: #F3F8F3; }
+.ss-tbl tr.dn input.ss-t { text-decoration: line-through; color: var(--ink-soft); }
+.ss-gbase { position: absolute; top: 4px; height: 18px; border: 1px dashed var(--ink-soft); border-radius: 4px; background: transparent; }
+.ss-act { color: #fff !important; background: var(--copper) !important; border-radius: 6px; padding: 3px 9px; text-decoration: none !important; }
+/* mở rộng chi tiết thi công ngay trên Lịch triển khai chung */
+.tl-g-sub { height: 26px; }
+.tl-g-sub .tl-g-name { padding: 3px 10px 3px 24px; font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; background: #FBFAF6; cursor: default; }
+.tl-g-sub.grp .tl-g-name { background: #EEF2F4; font-weight: 600; padding-left: 14px; }
+.tl-g-sub .tl-g-name span.tx { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.tl-g-sub .tl-g-track { background: #FBFAF6; }
+.tl-g-sub .tl-g-name input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--green); margin: 0; cursor: pointer; flex: 0 0 auto; }
+.tl-g-sub .ss-var { margin-left: 0; flex: 0 0 auto; }
+.tl-sbar { position: absolute; top: 5px; height: 16px; border-radius: 4px; background: var(--blue-soft); border: 1px solid var(--blue); overflow: hidden; z-index: 2; }
+.tl-sbar i { position: absolute; inset: 0 auto 0 0; background: var(--blue); opacity: .45; }
+.tl-sbar.dn { background: var(--green-soft); border-color: var(--green); } .tl-sbar.dn i { background: var(--green); opacity: .8; }
+.tl-sbar.late { background: var(--red-soft); border-color: var(--red); } .tl-sbar.late i { background: var(--red); }
+.tl-sbar.sum { top: 11px; height: 7px; background: var(--ink); border-color: var(--ink); } .tl-sbar.sum i { background: var(--green); opacity: 1; }
+.tl-sbase { position: absolute; top: 4px; height: 18px; border: 1px dashed var(--ink-soft); border-radius: 4px; z-index: 1; }
+.tl-xp { border: 1px solid var(--line-dark); background: var(--panel); border-radius: 4px; cursor: pointer; font-size: 10px; line-height: 1; padding: 2px 5px; color: var(--ink-soft); margin-right: 4px; font-family: inherit; }
+.tl-xp:hover { color: var(--ink); border-color: var(--ink); }
+.tl-xp.on { background: var(--blue); border-color: var(--blue); color: #fff; }
