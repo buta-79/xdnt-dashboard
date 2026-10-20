@@ -831,6 +831,7 @@ export default function TimelineBoard({
     if (lateSite.length) attention.push({ sev: 2.1, k: "bad", id: p.id, t: `${c} · ${lateSite.length} hạng mục thi công trễ hạn`, sub: lateSite.slice(0, 2).map((i) => `${i.t} (${i.pc}%)`).join(" · ") });
     const pendSite = schedItems(p).filter(schedPending);
     if (pendSite.length) attention.push({ sev: 2.4, k: "warn", id: p.id, t: `${c} · ${pendSite.length} hạng mục thi công chờ BOD duyệt ngày hoàn thành`, sub: pendSite.slice(0, 2).map((i) => `${i.t} (xong ${fd(i.bd.date)})`).join(" · ") });
+    if (p.revert && p.revert.status === "pending") attention.push({ sev: 2.3, k: "warn", id: p.id, t: `${c} · đề nghị chuyển về Cơ hội chờ BOD duyệt`, sub: `${p.revert.by}: ${p.revert.reason}` });
     const starJobs = (p.jobs || []).filter((j) => !j.done && j.star && j.due >= today && j.date <= today);
     if (starJobs.length) attention.push({ sev: 2.8, k: "warn", id: p.id, t: `${c} · ★ ${starJobs.length} việc quan trọng hôm nay`, sub: starJobs.slice(0, 2).map((j) => j.text).join(" · ") });
     openNotes(p).filter((n) => n.type !== "note").forEach((n) => attention.push({ sev: 2.5, k: n.type === "block" ? "bad" : "warn", id: p.id, stage: n.stage, t: `${c} · ${NOTE_LABELS[n.type]} (bước ${n.stage} ${stageLabel(n.stage)})`, sub: `${n.text}${n.need ? " · cần " + n.need : ""}` }));
