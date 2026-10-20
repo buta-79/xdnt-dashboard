@@ -360,12 +360,13 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
         </div>
       </div>
 
-      {items.length === 0 ? (
+      {items.length === 0 && groups.length === 0 ? (
         <div className="tl-panel"><div className="tl-panel-b">
           <div className="tl-warnbox" style={{ margin: 0 }}>Dự án này chưa có bảng tiến độ thi công. Chọn <b>Dán từ Excel</b> (nhanh nhất), hoặc <b>Áp dụng mẫu</b> rồi chỉnh lại, hoặc thêm nhóm và nhập từng hạng mục.</div>
         </div></div>
       ) : (
         <>
+          {items.length > 0 && (<>
           <div className="ss-kpis">
             <div className="ss-k"><div className="l">Bắt đầu thi công</div><div className="v">{fdy(r.s)}</div></div>
             <div className="ss-k"><div className="l">Kết thúc dự kiến</div><div className="v">{fdy(r.e)}{baseEnd && baseEnd !== r.e && <small style={{ color: baseEnd > r.e ? "var(--green)" : "var(--red)" }}> · {baseEnd > r.e ? `sớm ${diff(r.e, baseEnd)}` : `trễ ${diff(baseEnd, r.e)}`} ngày so với KH gốc</small>}</div></div>
@@ -396,6 +397,8 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
               </tbody></table></div>
             )}
           </div>
+
+          </>)}
 
           <div className="tl-panel">
             <div className="tl-panel-h"><h3>Bảng hạng mục</h3><span className="sub">{items.length} hạng mục · “Số ngày” = ngày làm việc, không tính Chủ nhật · sửa ngày hoặc số ngày đều được</span></div>
@@ -459,10 +462,12 @@ export default function SiteSchedule({ projects, updateProject, focusPid, onOpen
             </div>
           </div>
 
+          {items.length > 0 && (
           <div className="tl-panel">
             <div className="tl-panel-h"><h3>Tiến độ theo ngày</h3><span className="sub">ô xanh nhạt = Chủ nhật · vạch cam = hôm nay · thanh đỏ = đang trễ</span></div>
             <SiteGantt groups={groups} items={items} collapsed={collapsed} today={today} />
           </div>
+          )}
         </>
       )}
 
