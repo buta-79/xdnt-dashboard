@@ -17,8 +17,8 @@ import {
 
 const d2n = (s) => Math.round(Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) / 86400000);
 const n2d = (n) => new Date(n * 86400000).toISOString().slice(0, 10);
-const fd = (s) => (s ? s.slice(8, 10) + "/" + s.slice(5, 7) : "—");
-const fdy = (s) => (s ? fd(s) + "/" + s.slice(0, 4) : "—");
+export const fd = (s) => (s ? s.slice(8, 10) + "/" + s.slice(5, 7) : "—");
+export const fdy = (s) => (s ? fd(s) + "/" + s.slice(0, 4) : "—");
 const WD = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 const stageName = (id) => PROJECT_STAGES.find((s) => s.id === id)?.label || "";
 const DW = 24;
@@ -67,7 +67,7 @@ export function DoneDialog({ item, today, role, onConfirm, onClose }) {
 }
 
 // Ô nhập: chốt khi rời ô / Enter / sau 0,8 giây — không ghi Firestore từng phím gõ
-function Cell({ type, value, onCommit, className, min, max, placeholder, title }) {
+export function Cell({ type, value, onCommit, className, min, max, placeholder, title }) {
   const [text, setText] = useState(String(value ?? ""));
   const timer = useRef(null);
   const last = useRef(String(value ?? ""));
@@ -151,7 +151,7 @@ function PasteDialog({ today, hasItems, onClose, onApply }) {
 }
 
 /* ---- Gantt theo ngày ---- */
-function SiteGantt({ groups, items, collapsed, today }) {
+export function SiteGantt({ groups, items, collapsed, today }) {
   const r = schedRange(items);
   if (!r) return null;
   const mn = d2n(r.s) - 2, mx = d2n(r.e) + 3, W = (mx - mn + 1) * DW;
@@ -199,7 +199,7 @@ function SiteGantt({ groups, items, collapsed, today }) {
     </div>
   );
 }
-const diff = (a, b) => diffDays(a, b);
+export const diff = (a, b) => diffDays(a, b);
 
 /* ====================================================================== */
 export default function SiteSchedule({ projects, updateProject, focusPid, onOpenPlan, currentRole }) {
