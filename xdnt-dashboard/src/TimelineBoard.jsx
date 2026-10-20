@@ -6,11 +6,11 @@ import {
   PLAN_STAGE_COUNT, PLAN_PHASES, PLAN_SIZE_OPTIONS, suggestPlanDays,
   projectPlan, planToPatch, suggestPlan, shiftPlanFrom, applyStageEnd, setStageSkip, setPlanStart, planStatus, planProgressPct,
   stepStart, stepDays, stepEndForDays, stepIsOwnStart, setStageStart, planOverlaps,
-  schedItems, schedGroups, schedPct, schedIsLate, schedRange, schedSetDone, schedPullForward,
+  schedItems, schedGroups, schedPct, schedIsLate, schedRange, schedSetDone, schedPullForward, schedDoneMessage, schedPending,
   addDaysISO, diffDays,
 } from "./data/seed";
 import { JobsBoard, ProjectJobs, JobRow, QuickAdd, jobOps } from "./JobsBoard";
-import SiteSchedule, { varLabel } from "./SiteSchedule";
+import SiteSchedule, { varLabel, DoneDialog } from "./SiteSchedule";
 
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI CHUNG (Gantt) — thay cho bảng "Kế hoạch triển khai" cũ   */
@@ -751,17 +751,18 @@ export default function TimelineBoard({
   const toggleNote = (p, id) => updateProject(p.id, { notes: (p.notes || []).map((n) => (n.id === id ? { ...n, resolved: !n.resolved } : n)) });
   const removeNote = (p, id) => updateProject(p.id, { notes: (p.notes || []).filter((n) => n.id !== id) });
 
-  /* ---- tick hoàn thành hạng mục thi công ngay trên Lịch chung ---- */
-  const toggleSiteItem = (p, id, done) => {
+  /* ---- tick hoàn thành hạng mục thi công ngay trên Lịch chung (chọn ngày thực tế qua hộp thoại) ---- */
+  const [doneDlg, setDoneDlg] = useState(null); // { pid, id }
+  const applyDone = (p, id, done, opts) => {
     const items0 = schedItems(p), groups0 = schedGroups(p);
-    const r = schedSetDone(items0, id, done, today);
+    const r = schedSetDone(items0, id, done, today, opts);
     const it = items0.find((x) => x.id === id);
     const prevSchedule = p.schedule || null;
     updateProject(p.id, { schedule: { groups: groups0, items: r.items } });
     const undo = () => { updateProject(p.id, { schedule: prevSchedule }); setToast(null); };
-    if (!done) { showToast(`Đã bỏ đánh dấu xong “${it.t}” — trả về kế hoạch gốc`, undo); return; }
-    if (r.early > 0) {
-      showToast(`${p.code.slice(5)} · Xong “${it.t}” sớm ${r.early} ngày — ngày kết thúc hạng mục đã rút ngắn`, undo, {
+    const msg = `${p.code.slice(5)} · ${schedDoneMessage(it.t, done, r)}`;
+    if (done && r.early > 0) {
+      showToast(msg, undo, {
         label: `Dời các hạng mục sau sớm ${r.early} ngày`,
         fn: () => {
           const q = schedPullForward(r.items, id, r.early, today);
@@ -769,7 +770,13 @@ export default function TimelineBoard({
           showToast(q.moved ? `Đã dời sớm ${q.moved} hạng mục nối sau — thời gian bàn giao rút ngắn tương ứng` : "Không có hạng mục nào dời được (đã sát hôm nay hoặc không nối sau)", () => { updateProject(p.id, { schedule: { groups: groups0, items: r.items } }); setToast(null); });
         },
       });
-    } else showToast(r.early < 0 ? `Xong “${it.t}” trễ ${-r.early} ngày so với kế hoạch` : `Đã đánh dấu xong “${it.t}”`, undo);
+    } else showToast(msg, undo);
+  };
+  const toggleSiteItem = (p, id, done) => {
+    if (done) { setDoneDlg({ pid: p.id, id }); return; }
+    const it = schedItems(p).find((x) => x.id === id);
+    if (it && it.bd && it.bd.status === "approved" && currentRole !== "BOD") { showToast("Hạng mục này đã được BOD duyệt ngày hoàn thành — chỉ BOD được bỏ đánh dấu xong"); return; }
+    applyDone(p, id, false);
   };
   const openSite = (pid) => { setSelId(pid); setSiteFocus(pid); setMode("site"); };
 
@@ -822,6 +829,8 @@ export default function TimelineBoard({
     if (lateJobs.length) attention.push({ sev: 2.2, k: "bad", id: p.id, t: `${c} · ${lateJobs.length} việc triển khai trễ hạn`, sub: lateJobs.slice(0, 2).map((j) => j.text).join(" · ") });
     const lateSite = schedItems(p).filter((i) => schedIsLate(i, today));
     if (lateSite.length) attention.push({ sev: 2.1, k: "bad", id: p.id, t: `${c} · ${lateSite.length} hạng mục thi công trễ hạn`, sub: lateSite.slice(0, 2).map((i) => `${i.t} (${i.pc}%)`).join(" · ") });
+    const pendSite = schedItems(p).filter(schedPending);
+    if (pendSite.length) attention.push({ sev: 2.4, k: "warn", id: p.id, t: `${c} · ${pendSite.length} hạng mục thi công chờ BOD duyệt ngày hoàn thành`, sub: pendSite.slice(0, 2).map((i) => `${i.t} (xong ${fd(i.bd.date)})`).join(" · ") });
     const starJobs = (p.jobs || []).filter((j) => !j.done && j.star && j.due >= today && j.date <= today);
     if (starJobs.length) attention.push({ sev: 2.8, k: "warn", id: p.id, t: `${c} · ★ ${starJobs.length} việc quan trọng hôm nay`, sub: starJobs.slice(0, 2).map((j) => j.text).join(" · ") });
     openNotes(p).filter((n) => n.type !== "note").forEach((n) => attention.push({ sev: 2.5, k: n.type === "block" ? "bad" : "warn", id: p.id, stage: n.stage, t: `${c} · ${NOTE_LABELS[n.type]} (bước ${n.stage} ${stageLabel(n.stage)})`, sub: `${n.text}${n.need ? " · cần " + n.need : ""}` }));
@@ -842,10 +851,10 @@ export default function TimelineBoard({
         </div>
       </div>
       {mode === "site" ? (
-        <SiteSchedule key={siteFocus || "all"} projects={projects} updateProject={updateProject} focusPid={siteFocus}
+        <SiteSchedule key={siteFocus || "all"} projects={projects} updateProject={updateProject} focusPid={siteFocus} currentRole={currentRole}
           onOpenPlan={(pid) => { setSelId(pid); setReviewId(pid); setMode("gantt"); }} />
       ) : mode === "jobs" ? (
-        <JobsBoard key={jobsFocus || "all"} projects={projects} updateProject={updateProject} focusPid={jobsFocus}
+        <JobsBoard key={jobsFocus || "all"} projects={projects} updateProject={updateProject} focusPid={jobsFocus} currentRole={currentRole}
           onOpenProject={(pid) => { setSelId(pid); setMode("gantt"); }} />
       ) : (
       <>
@@ -1119,6 +1128,11 @@ export default function TimelineBoard({
       </>
       )}
 
+      {doneDlg && (() => {
+        const dp = projects.find((x) => x.id === doneDlg.pid), di = dp && schedItems(dp).find((x) => x.id === doneDlg.id);
+        return di ? <DoneDialog item={di} today={today} role={currentRole} onClose={() => setDoneDlg(null)}
+          onConfirm={({ date, reason }) => { setDoneDlg(null); applyDone(dp, di.id, true, { date, reason, role: currentRole, by: currentRole }); }} /> : null;
+      })()}
       {toast && (
         <div className="tl-toast"><span>{toast.msg}</span>{toast.act && <button className="ss-act" onClick={() => { const f = toast.act.fn; setToast(null); f(); }}>{toast.act.label}</button>}{toast.undo && <button onClick={toast.undo}>Hoàn tác</button>}</div>
       )}
