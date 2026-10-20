@@ -11,6 +11,7 @@ import {
 } from "./data/seed";
 import { JobsBoard, ProjectJobs, JobRow, QuickAdd, jobOps } from "./JobsBoard";
 import SiteSchedule, { varLabel, DoneDialog } from "./SiteSchedule";
+import { RevertDialog } from "./RevertDialog";
 
 /* ---------------------------------------------------------------------- */
 /*  LỊCH TRIỂN KHAI CHUNG (Gantt) — thay cho bảng "Kế hoạch triển khai" cũ   */
@@ -587,6 +588,34 @@ function OtherPages({ p, tasks, today }) {
   );
 }
 
+// Dự án phải deal lại từ đầu hạng mục / BOQ → chuyển về Cơ hội (KD/BP đề xuất, BOD duyệt hoặc chuyển thẳng)
+function RevertSection({ p, currentRole, revertOps }) {
+  const [dlg, setDlg] = useState(null); // null | "request" | "approve"
+  if (!revertOps || p.status === "closed") return null;
+  const isBOD = currentRole === "BOD";
+  const rv = p.revert || null;
+  const pending = rv && rv.status === "pending";
+  return (
+    <div className="tl-sec">
+      {pending ? (
+        <div className="tl-warnbox" style={{ margin: 0 }}>
+          <b>Đề nghị chuyển về Cơ hội chờ BOD duyệt</b> — {rv.by} gửi {rv.at}: “{rv.reason}”.
+          {isBOD
+            ? <div className="tl-row2" style={{ marginTop: 6 }}><button className="btn btn-primary btn-sm" onClick={() => setDlg("approve")}>Duyệt &amp; chuyển về Cơ hội</button><button className="btn btn-outline btn-sm" onClick={() => revertOps.reject(p.id)}>Từ chối</button></div>
+            : " Trong lúc chờ, dự án vẫn chạy bình thường."}
+        </div>
+      ) : (
+        <>
+          <button className="btn btn-outline btn-sm" title="Phải deal lại từ đầu hạng mục / BOQ" onClick={() => setDlg("request")}>↩ {isBOD ? "Chuyển về Cơ hội…" : "Đề nghị chuyển về Cơ hội…"}</button>
+          {rv && rv.status === "rejected" && <div className="tl-note" style={{ marginTop: 4 }}>BOD đã từ chối đề nghị trước ({rv.at}: “{rv.reason}”).</div>}
+        </>
+      )}
+      {dlg && <RevertDialog project={p} role={currentRole} mode={dlg} initialReason={dlg === "approve" && rv ? rv.reason : ""} onClose={() => setDlg(null)}
+        onSubmit={(reason) => { setDlg(null); if (dlg === "approve") revertOps.perform(p.id, reason, rv ? rv.by : currentRole); else if (isBOD) revertOps.perform(p.id, reason, currentRole); else revertOps.request(p.id, reason); }} />}
+    </div>
+  );
+}
+
 function ArchiveSection({ p, isBOD, openTasksCount, onArchive }) {
   const [ask, setAsk] = useState(false);
   if (!isBOD) return <div className="tl-sec"><span className="tl-note">Chỉ BOD được đánh dấu hoàn thành → lưu trữ dự án.</span></div>;
@@ -613,7 +642,7 @@ function ArchiveSection({ p, isBOD, openTasksCount, onArchive }) {
 /* ====================================================================== */
 
 export default function TimelineBoard({
-  projects, tasks, currentRole, updateProject, toggleProjectGate, advanceProject, archiveProject, goToProject, focusCode,
+  projects, tasks, currentRole, updateProject, toggleProjectGate, advanceProject, archiveProject, goToProject, focusCode, revertOps,
 }) {
   const today = todayISO();
   const isBOD = currentRole === "BOD";
@@ -1118,6 +1147,7 @@ export default function TimelineBoard({
                   </>
                 )}
                 <OtherPages p={p} tasks={myTasks} today={today} />
+                {!archived && <RevertSection key={"r" + p.id} p={p} currentRole={currentRole} revertOps={revertOps} />}
                 {!archived && <ArchiveSection key={"a" + p.id} p={p} isBOD={isBOD} openTasksCount={myTasks.length}
                   onArchive={() => { archiveProject(p.id); showToast(`Đã lưu trữ ${p.code}${projectAR(p) > 0 ? " — còn nợ chuyển sang Thu hồi công nợ" : ""}`); }} />}
               </>
