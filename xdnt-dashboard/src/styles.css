@@ -803,3 +803,59 @@
 .ss-vrow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; white-space: normal; max-width: 230px; }
 .ss-vrow .ss-var { margin-left: 0; }
 .ss-vrow .ss-dec { margin-left: 0; }
+/* Cơ hội bán hàng — công việc & timeline */
+.oppss-wrap { margin-bottom: 16px; min-width: 0; }
+.oppss-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.oppss-top h4, .oppss-top h3 { margin: 0; }
+.oppss-sub { font-weight: 500; color: var(--ink-soft); font-size: 12px; }
+.oppss .ss-kpis { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.oppss-h { font-size: 12.5px; font-weight: 700; margin-bottom: 4px; }
+.oppss-h span { font-weight: 400; color: var(--ink-soft); margin-left: 6px; }
+.oppss-link { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.oppss-link .oppss-h { padding: 8px 12px 0; }
+.oppss-link .ss-lnk tr.cur td { background: var(--copper-soft); }
+.oppss-full { max-width: 1280px; margin-top: 2vh; }
+@media (max-width: 700px) { .oppss-full { padding: 12px; } .oppss-h span { display: block; margin-left: 0; } }
+.split > * { min-width: 0; }
+.project-detail { min-width: 0; }
+.oppss .tl-tbl-wrap, .oppss .ss-gwrap { max-width: 100%; }
+/* khung hẹp trong chi tiết cơ hội: chỉ giữ Công việc · Bắt đầu · Kết thúc · % (xem đủ cột ở chế độ Mở rộng) */
+.oppss-inline .ss-tbl th:nth-child(5), .oppss-inline .ss-tbl td:nth-child(5),
+.oppss-inline .ss-tbl th:nth-child(6), .oppss-inline .ss-tbl td:nth-child(6),
+.oppss-inline .ss-tbl th:nth-child(7), .oppss-inline .ss-tbl td:nth-child(7),
+.oppss-inline .ss-tbl th:nth-child(9), .oppss-inline .ss-tbl td:nth-child(9) { display: none; }
+.oppss-inline .ss-tbl .ss-d { width: 118px; }
+.oppss-inline .ss-tbl .ss-t { min-width: 150px; }
+.oppss-inline .ss-tbl tr.grp td { display: table-cell; }
+/* Timeline tổng hợp các cơ hội */
+.oppt { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.oppt .ss-kpis { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.oppt-bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--ink-soft); }
+.oppt-sort { display: inline-flex; gap: 6px; align-items: center; }
+.oppt-leg { display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.oppt-leg i { display: inline-block; width: 12px; height: 10px; border-radius: 3px; background: var(--blue-soft); border: 1px solid var(--blue); margin-right: -4px; }
+.oppt-leg i.dn { background: var(--green-soft); border-color: var(--green); }
+.oppt-leg i.cur { background: var(--copper-soft); border-color: var(--copper); }
+.oppt-leg i.late { background: var(--red-soft); border-color: var(--red); }
+.oppt-leg i.tdy { width: 2px; height: 12px; border: 0; background: var(--copper); border-radius: 0; }
+.oppt-tip { margin-left: auto; font-style: italic; }
+.oppt-names { flex: 0 0 240px; }
+.oppt-name { display: flex; flex-direction: column; justify-content: center; gap: 2px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 0 10px; cursor: pointer; font-family: inherit; min-width: 0; }
+.oppt-name b { font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oppt-name span { font-size: 10.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oppt-name:hover, .oppt-name.on, .oppt-row:hover, .oppt-row.on { background: var(--copper-soft); }
+.oppt-row { cursor: pointer; }
+.oppt-seg { position: absolute; top: 13px; height: 20px; border-radius: 4px; background: var(--blue-soft); border: 1px solid var(--blue); overflow: hidden; font-size: 10px; line-height: 18px; color: var(--ink); z-index: 1; }
+.oppt-seg i { position: absolute; inset: 0 auto 0 0; background: var(--blue); opacity: .4; }
+.oppt-seg span { position: relative; padding-left: 4px; font-weight: 700; }
+.oppt-seg.cur { background: var(--copper-soft); border-color: var(--copper); } .oppt-seg.cur i { background: var(--copper); opacity: .5; }
+.oppt-seg.dn { background: var(--green-soft); border-color: var(--green); } .oppt-seg.dn i { background: var(--green); }
+.oppt-seg.late { background: var(--red-soft); border-color: var(--red); } .oppt-seg.late i { background: var(--red); }
+.oppt-lbl { position: absolute; top: 14px; font-size: 11px; white-space: nowrap; color: var(--ink-soft); z-index: 1; }
+.oppt-lbl b { color: var(--ink); } .oppt-lbl em { color: var(--red); font-style: normal; font-weight: 600; }
+.oppt-none { border-top: 1px dashed var(--line-dark); padding-top: 10px; }
+.oppt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 700px) { .oppt-names { flex-basis: 150px; } .oppt-tip { margin-left: 0; } }
+.oppt-names { min-width: 0; overflow: hidden; }
+.oppt-name { overflow: hidden; }
+.oppt-name b, .oppt-name span { display: block; max-width: 100%; }
