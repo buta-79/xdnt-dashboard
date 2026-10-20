@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import {
   todayISO, addDaysISO, diffDays, PLAN_STAGE_COUNT, PROJECT_STAGES,
   makeJob, makeNote, jobIsLate, parseJobDates, parseJobList,
-  schedItems, schedDueItems, schedIsLate,
+  schedItems, schedDueItems, schedIsLate, schedSetDone, schedVariance,
 } from "./data/seed";
 const stageName = (id) => PROJECT_STAGES.find((s) => s.id === id)?.label || "";
 
@@ -74,15 +74,15 @@ export function jobOps(p, updateProject, today) {
 }
 
 // Hạng mục thi công (từ bảng "Tiến độ thi công") đang chạy hôm nay / trễ — sửa nhanh % tại chỗ
-function SiteRow({ it, day, onPct }) {
+function SiteRow({ it, day, onPct, onDone }) {
   const late = schedIsLate(it, day);
   const [v, setV] = useState(String(it.pc));
   useEffect(() => { setV(String(it.pc)); }, [it.pc]);
-  const commit = () => { const n = Math.max(0, Math.min(100, Math.round(+v) || 0)); if (n !== it.pc) onPct(it.id, n); else setV(String(it.pc)); };
+  const commit = () => { const n = Math.max(0, Math.min(100, Math.round(+v) || 0)); if (n >= 100) onDone(it.id, true); else if (n !== it.pc) onPct(it.id, n); else setV(String(it.pc)); };
   return (
     <div className={`jb-job jb-site ${it.pc >= 100 ? "done" : ""}`}>
-      <span className="jb-sico" title="Hạng mục thi công">▣</span>
-      <span className="jb-tx">{it.t}<span className="jb-chip stage" style={{ marginLeft: 6 }}>B{it.st} {stageName(it.st)}</span>{it.note ? <span className="jb-hint" style={{ marginLeft: 6 }}>· {it.note}</span> : null}</span>
+      <input type="checkbox" checked={it.pc >= 100} title="Hoàn thành hạng mục thi công — xong sớm thì rút ngắn thời gian" onChange={(e) => onDone(it.id, e.target.checked)} />
+      <span className="jb-tx">{it.t}<span className="jb-chip stage" style={{ marginLeft: 6 }}>B{it.st} {stageName(it.st)}</span>{it.note ? <span className="jb-hint" style={{ marginLeft: 6 }}>· {it.note}</span> : null}{schedVariance(it) ? <span className={`ss-var ${schedVariance(it) > 0 ? "early" : "late"}`} style={{ marginLeft: 6 }}>{it.doneAt ? "xong" : "dời"} {schedVariance(it) > 0 ? "sớm" : "trễ"} {Math.abs(schedVariance(it))} ngày</span> : null}</span>
       <span className={`jb-d ${late ? "late" : ""}`}>{late ? `Trễ ${diffDays(it.e, day)} ngày` : it.s === it.e ? fd(it.s) : `${fd(it.s)}–${fd(it.e)}`}</span>
       <span className="jb-acts" style={{ opacity: 1 }}>
         <input className="input input-sm jb-pc" type="number" min="0" max="100" value={v} onChange={(e) => setV(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />%
@@ -262,6 +262,12 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
             const all = p.jobs || [];
             const setPct = (id, n) => updateProject(p.id, { schedule: { ...(p.schedule || {}), items: schedItems(p).map((x) => (x.id === id ? { ...x, pc: n } : x)) } });
             const lateSite = site.filter((x) => schedIsLate(x, day)).length;
+            const setDone = (id, done) => {
+              const r = schedSetDone(schedItems(p), id, done, today);
+              updateProject(p.id, { schedule: { ...(p.schedule || {}), items: r.items } });
+              const nm = (schedItems(p).find((x) => x.id === id) || {}).t || "";
+              say(!done ? `Đã bỏ đánh dấu xong “${nm}”` : r.early > 0 ? `Xong “${nm}” sớm ${r.early} ngày — mở tab Tiến độ thi công nếu muốn dời các hạng mục nối sau sớm lên` : r.early < 0 ? `Xong “${nm}” trễ ${-r.early} ngày` : `Đã đánh dấu xong “${nm}”`);
+            };
             const dn = all.filter((j) => j.done).length;
             const late = items.filter((j) => jobIsLate(j, day)).length;
             const ops = jobOps(p, updateProject, today);
@@ -279,7 +285,7 @@ export function JobsBoard({ projects, updateProject, focusPid, onOpenProject }) 
                   <div className="jb-note" key={n.id}>⚑ <span><b>Lưu ý:</b> {n.text}</span></div>
                 ))}
                 {site.length > 0 && <div className="jb-sitehd">Thi công theo tiến độ · {site.length} hạng mục</div>}
-                {site.map((it) => <SiteRow key={it.id} it={it} day={day} onPct={setPct} />)}
+                {site.map((it) => <SiteRow key={it.id} it={it} day={day} onPct={setPct} onDone={setDone} />)}
                 {items.map((j) => <JobRow key={j.id} j={j} day={day} onToggle={ops.toggle} onStar={ops.star} onDel={ops.del} />)}
                 <QuickAdd onAdd={(t) => ops.add(t, day)} />
               </div>
